@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026 GapplX
+ * Copyright (C) 2026 GappleX
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,14 +15,16 @@
  */
 package io.github.gapplex.jrootie.operators;
 
-import io.github.gapplex.jrootie.AcquireFailedException;
+import io.github.gapplex.jrootie.agent.InstrumentationHolder;
+import io.github.gapplex.jrootie.exceptions.AcquireFailedException;
 import io.github.gapplex.jrootie.Audit;
 import io.github.gapplex.jrootie.Log;
-import io.github.gapplex.jrootie.OperateFailedException;
-import io.github.gapplex.jrootie.ScopeCloseException;
+import io.github.gapplex.jrootie.exceptions.OperateFailedException;
+import io.github.gapplex.jrootie.exceptions.ScopeCloseException;
 import io.github.gapplex.jrootie.unsafe.IUnsafe;
 import io.github.gapplex.jrootie.unsafe.UnsafeProvider;
 
+import java.lang.instrument.Instrumentation;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Field;
@@ -38,7 +40,8 @@ import java.util.List;
  * {@link IUnsafe} 取得 {@code MethodHandles.Lookup.IMPL_LOOKUP}，并预解析
  * {@code Class} 上的若干 {@code getDeclaredXxx0} 原生方法句柄，
  * 之后对外提供 {@link RootDoField}、{@link RootDoMethod}、
- * {@link RootDoConstructor}、{@link RootDoClass} 四个操作器。</p>
+ * {@link RootDoConstructor}、{@link RootDoClass}、{@link RootDoRedefine}
+ * 五个操作器。</p>
  *
  * <h2>模式与自动恢复</h2>
  *
@@ -46,22 +49,30 @@ import java.util.List;
  * <ul>
  *   <li>{@link AcquireMode#NORMAL}：默认，无 undo，零额外开销。</li>
  *   <li>{@link AcquireMode#TEST} / {@link AcquireMode#TEST_KEEP}：
- *       记录所有字段写入的 undo-log，{@link #close()} 时按 LIFO 回滚。</li>
+ *       记录所有字段写入与方法体重定义的 undo-log，{@link #close()} 时
+ *       按 LIFO 回滚。</li>
  *   <li>{@link AcquireMode#BEFORE_SECURITY_MANAGER}：与原语义一致，
  *       无 undo。</li>
  * </ul>
  *
  * <h2>自动恢复的边界</h2>
  *
- * <p>只覆盖<b>字段写入</b>。构造器调用与方法调用的副作用不在恢复范围——
- * 硬做只会给出“部分回滚”的假象。scope 只保证它自己写入过的字段按
- * LIFO 回滚；它不扫描全局、不追踪外部修改、不恢复对象内部状态。</p>
+ * <p>回滚覆盖两类操作：</p>
+ * <ul>
+ *   <li><b>字段写入</b>——写回旧值。注意是引用，不是快照：若字段指向的
+ *       对象在 scope 存续期被外部修改，回滚不会撤销对象内部的变化。</li>
+ *   <li><b>方法体重定义</b>——用 redefine 之前的字节码覆盖。不做冲突检测：
+ *       多个 scope 改同一个类时，后关闭者覆盖先关闭者。</li>
+ * </ul>
+ *
+ * <p>不覆盖：构造器调用与方法调用的副作用、数组元素写入。scope 不扫描
+ * 全局、不追踪外部修改、不恢复对象内容。</p>
  *
  * <h2>线程绑定</h2>
  *
  * <p>{@code TEST*} 模式下 {@code Rootie} 绑定创建线程。非持有线程调用
- * 写方法时抛 {@link OperateFailedException}。并行测试应每线程各自
- * {@code acquire}。</p>
+ * 写方法或 {@link #close()} 时抛 {@link OperateFailedException}。
+ * 并行测试应每线程各自 {@code acquire}。</p>
  *
  * <h2>典型用法</h2>
  *
@@ -72,13 +83,13 @@ import java.util.List;
  * }  // close() 自动回滚
  * }</pre>
  *
- * <p><b>安全提示：</b>获取 {@code sun.misc.Unsafe} 在 Java 16+ 上需要
- * 添加 {@code --add-opens java.base/sun.misc=ALL-UNNAMED}。</p>
+ * <p><b>安全提示：</b>JDK 9–24 无需额外 JVM 参数；JDK 25+ 需要
+ * {@code -javaagent:jrootie-0.2.0.jar} 以启用 JDK 内部类的 redefine 支持。</p>
  *
  * @since 0.1.0
  * @see AcquireMode
  * @see WriteRecord
- * @see WriteRecorder
+ * @see RedefineRecord
  */
 public class Rootie implements AutoCloseable {
 
@@ -118,8 +129,11 @@ public class Rootie implements AutoCloseable {
     /**
      * undo-log，LIFO 回放。{@link AcquireMode#recordsUndo()} 为
      * {@code false} 时为 {@code null}，走零开销路径。
+     *
+     * <p>条目类型见 {@link UndoEntry}：字段写入（{@link WriteRecord}）与
+     * 方法体重定义（{@link RedefineRecord}）。</p>
      */
-    private final ArrayDeque<WriteRecord> undo;
+    private final ArrayDeque<UndoEntry> undo;
 
     /** close 幂等标记。 */
     private volatile boolean closed;
@@ -137,6 +151,9 @@ public class Rootie implements AutoCloseable {
 
     /** 类操作器，懒加载。 */
     private volatile RootDoClass classOps;
+
+    /** 方法体重定义操作器，懒加载。 */
+    private volatile RootDoRedefine redefineOps;
 
     /**
      * 私有构造器，仅由 {@link #doAcquire(String)} 调用。
@@ -156,7 +173,7 @@ public class Rootie implements AutoCloseable {
         this.getDeclaredMethods0 = getDeclaredMethods0;
         this.getDeclaredClasses0 = getDeclaredClasses0;
         this.getDeclaredConstructors0 = getDeclaredConstructors0;
-        this.undo = mode.recordsUndo() ? new ArrayDeque<WriteRecord>() : null;
+        this.undo = mode.recordsUndo() ? new ArrayDeque<UndoEntry>() : null;
     }
 
     // ===== 静态入口 =====
@@ -172,8 +189,8 @@ public class Rootie implements AutoCloseable {
     }
 
     /**
-     * 测试模式入口。写入字段时自动记录 undo，{@link #close()} 时
-     * 按 LIFO 回滚；冲突策略
+     * 测试模式入口。写入字段或重定义方法体时自动记录 undo，
+     * {@link #close()} 时按 LIFO 回滚；冲突策略
      * {@link AcquireMode.ConflictPolicy#ROLLBACK_AND_REPORT}。
      *
      * @return 已初始化的 {@code Rootie}（{@link AcquireMode#TEST}）
@@ -184,7 +201,8 @@ public class Rootie implements AutoCloseable {
     }
 
     /**
-     * 测试模式 + 冲突保留入口。冲突时不回滚，保留现场供调试。
+     * 测试模式 + 冲突保留入口。字段冲突时不回滚，保留现场供调试。
+     * 方法体重定义仍无条件回滚——字节码不做冲突检测。
      *
      * <p><b>仅用于调试。</b>常规测试请用 {@link #acquireTest()}。</p>
      *
@@ -350,6 +368,35 @@ public class Rootie implements AutoCloseable {
         return r;
     }
 
+    /**
+     * 获取方法体重定义操作器（懒加载、线程安全）。
+     *
+     * <p>需要 Agent 已加载——redefine 依赖 {@code Instrumentation}。
+     * {@link AcquireMode#TEST} / {@link AcquireMode#TEST_KEEP} 模式下，
+     * 该操作器的 redefine 会记录到 undo-log，由 {@link #close()} 回滚。</p>
+     *
+     * @return {@link RootDoRedefine} 单例
+     * @throws OperateFailedException Agent 未加载（缺少 {@code -javaagent}）时
+     */
+    public RootDoRedefine rtdoRedefine() {
+        RootDoRedefine r = redefineOps;
+        if (r == null) {
+            synchronized (this) {
+                r = redefineOps;
+                if (r == null) {
+                    Instrumentation inst = InstrumentationHolder.get();
+                    if (inst == null) {
+                        throw new OperateFailedException(
+                                "rtdoRedefine requires -javaagent:jrootie.jar");
+                    }
+                    RedefineRecorder rec = (undo == null) ? null : this::recordRedefine;
+                    r = redefineOps = new RootDoRedefine(inst, owner, rec);
+                }
+            }
+        }
+        return r;
+    }
+
     // ===== undo 记录 =====
 
     /**
@@ -362,7 +409,7 @@ public class Rootie implements AutoCloseable {
      * @param field    字段
      * @param oldValue 写入前的旧值
      * @param newValue 即将写入的值
-     * @throws OperateFailedException 当前线程不是持有线程时
+     * @throws OperateFailedException 当前线程不是持有线程，或 scope 已关闭时
      */
     private void recordWrite(Object target, Field field, Object oldValue, Object newValue) {
         if (closed) {
@@ -387,6 +434,26 @@ public class Rootie implements AutoCloseable {
                 Modifier.isStatic(field.getModifiers())));
     }
 
+    /**
+     * {@link RedefineRecorder} 的实现：记录一次方法体重定义到 undo-log。
+     *
+     * <p>线程检查由 {@link RootDoRedefine} 在提交前完成。此处的
+     * {@code closed} 检查为防御性检查——正常流程下，调用方不应在 scope
+     * 关闭后继续 redefine。</p>
+     *
+     * @param target      被 redefine 的类
+     * @param oldBytecode redefine 之前的字节码
+     * @param registryId  {@code replace} 分配的 id；专用字节码路径为 {@code null}
+     * @throws OperateFailedException scope 已关闭时
+     */
+    private void recordRedefine(Class<?> target, byte[] oldBytecode, Integer registryId) {
+        if (closed) {
+            throw new OperateFailedException(
+                    "Rootie scope is closed; cannot redefine.");
+        }
+        undo.addLast(new RedefineRecord(target, oldBytecode, registryId));
+    }
+
     // ===== 生命周期 =====
 
     /**
@@ -396,17 +463,18 @@ public class Rootie implements AutoCloseable {
      * <ul>
      *   <li>{@link AcquireMode#NORMAL} /
      *       {@link AcquireMode#BEFORE_SECURITY_MANAGER}：no-op。</li>
-     *   <li>{@link AcquireMode#TEST}：按 LIFO 回滚；冲突时按
+     *   <li>{@link AcquireMode#TEST}：按 LIFO 回滚；字段冲突时按
      *       {@link AcquireMode.ConflictPolicy#ROLLBACK_AND_REPORT}
      *       先回滚再抛 {@link ScopeCloseException}。</li>
-     *   <li>{@link AcquireMode#TEST_KEEP}：按 LIFO 回滚洁净条目；
-     *       冲突条目保留现场，汇总为 {@link ScopeCloseException} 抛出。</li>
+     *   <li>{@link AcquireMode#TEST_KEEP}：按 LIFO 回滚洁净字段条目；
+     *       冲突字段条目保留现场，汇总为 {@link ScopeCloseException}
+     *       抛出。redefine 条目仍无条件回滚。</li>
      * </ul>
      *
      * <p>本方法幂等：重复调用是 no-op。</p>
      *
-     * @throws OperateFailedException 从非持有线程调用时
-     * @throws ScopeCloseException    回放检测到冲突时
+     * @throws OperateFailedException 从非持有线程调用，或 redefine 回滚失败时
+     * @throws ScopeCloseException    字段回放检测到冲突时
      */
     @Override
     public void close() {
@@ -425,39 +493,117 @@ public class Rootie implements AutoCloseable {
     /**
      * 按 LIFO 回放 undo-log。
      *
-     * <p>冲突判定使用引用比较（原始类型按值比较），见
+     * <p>字段条目的冲突判定使用引用比较（原始类型按值比较），见
      * {@link #sameValue(Object, Object, Class)}。“洁净”条目一定回滚；
-     * “冲突”条目按 {@link AcquireMode#conflictPolicy()} 决定回滚或保留。</p>
+     * “冲突”条目按 {@link AcquireMode#conflictPolicy()} 决定回滚或保留。
+     * redefine 条目无条件回滚——字节码不做冲突检测，直接以旧版本覆盖，
+     * 并注销 {@code replace} 注册的替换函数。</p>
+     *
+     * <p>字段冲突与 redefine 回滚失败分别汇总：字段冲突抛
+     * {@link ScopeCloseException}，redefine 失败抛
+     * {@link OperateFailedException}。若两者同时存在，redefine 失败作为
+     * suppressed 附加在 {@link ScopeCloseException} 上。</p>
      */
     private void replayUndo() {
-        if (undo.isEmpty()) return;
+        if (undo.isEmpty()) {
+            log.scopeClosed(mode.tag(), 0, 0);
+            return;
+        }
 
         List<ScopeCloseException.Conflict> conflicts = new ArrayList<>();
-        RootDoField fields = rtdoField();
+        List<Throwable> redefineFailures = new ArrayList<>();
         boolean rollbackOnConflict =
                 mode.conflictPolicy() == AcquireMode.ConflictPolicy.ROLLBACK_AND_REPORT;
+        int rolledBack = 0;
 
         while (!undo.isEmpty()) {
-            WriteRecord r = undo.pollLast();
-            try {
-                Object current = fields.readRaw(r.target(), r.field());
-                boolean clean = sameValue(current, r.newValue(), r.fieldType());
-                if (clean || rollbackOnConflict) {
-                    fields.writeRaw(r.target(), r.field(), r.oldValue());
-                }
-                if (!clean) {
-                    conflicts.add(new ScopeCloseException.Conflict(r, current));
-                }
-            } catch (Throwable t) {
-                conflicts.add(new ScopeCloseException.Conflict(r, null, t));
-                log.failed("scope_rollback", Rootie.class, mode.tag(), t);
+            UndoEntry entry = undo.pollLast();       // LIFO
+
+            if (entry instanceof WriteRecord) {
+                rolledBack += replayWrite((WriteRecord) entry, conflicts, rollbackOnConflict);
+            } else if (entry instanceof RedefineRecord) {
+                rolledBack += replayRedefine((RedefineRecord) entry, redefineFailures);
             }
         }
 
+        log.scopeClosed(mode.tag(), rolledBack, conflicts.size());
+
         if (!conflicts.isEmpty()) {
             ScopeCloseException ex = new ScopeCloseException(conflicts);
+            for (Throwable t : redefineFailures) ex.addSuppressed(t);
             log.failed("scope_close", Rootie.class, mode.tag(), ex);
             throw ex;
+        }
+        if (!redefineFailures.isEmpty()) {
+            OperateFailedException ex = new OperateFailedException(
+                    "Scope closed with " + redefineFailures.size()
+                            + " redefine rollback failure(s).",
+                    redefineFailures.get(0));
+            for (int i = 1; i < redefineFailures.size(); i++) {
+                ex.addSuppressed(redefineFailures.get(i));
+            }
+            log.failed("scope_close", Rootie.class, mode.tag(), ex);
+            throw ex;
+        }
+    }
+
+    /**
+     * 回放单条字段写入条目。
+     *
+     * @param r                  字段写入记录
+     * @param conflicts          冲突收集器
+     * @param rollbackOnConflict 冲突时是否回滚
+     * @return 成功回滚返回 {@code 1}，否则 {@code 0}
+     */
+    private int replayWrite(WriteRecord r,
+                            List<ScopeCloseException.Conflict> conflicts,
+                            boolean rollbackOnConflict) {
+        RootDoField fields = rtdoField();
+        Class<?> owner = r.field().getDeclaringClass();
+        String name = r.field().getName();
+        int level = Audit.Level.of(r.field());
+
+        try {
+            Object current = fields.readRaw(r.target(), r.field());
+            boolean clean = sameValue(current, r.newValue(), r.fieldType());
+
+            if (clean || rollbackOnConflict) {
+                fields.writeRaw(r.target(), r.field(), r.oldValue());
+                log.fieldRollback(owner, name, level);
+                if (!clean) conflicts.add(new ScopeCloseException.Conflict(r, current));
+                return 1;
+            } else {
+                log.fieldRollbackSkipped(owner, name, level);
+                conflicts.add(new ScopeCloseException.Conflict(r, current));
+                return 0;
+            }
+        } catch (Throwable t) {
+            conflicts.add(new ScopeCloseException.Conflict(r, null, t));
+            log.failed("scope_rollback", owner, name, t);
+            return 0;
+        }
+    }
+
+    /**
+     * 回放单条方法体重定义条目。
+     *
+     * @param rr       重定义记录
+     * @param failures 失败收集器
+     * @return 成功回滚返回 {@code 1}，否则 {@code 0}
+     */
+    private int replayRedefine(RedefineRecord rr, List<Throwable> failures) {
+        Class<?> target = rr.target();
+        try {
+            redefineOps.restoreForRollback(target, rr.oldBytecode());
+            if (rr.registryId() != null) {
+                MethodRegistry.unregister(rr.registryId().intValue());
+            }
+            log.redefineRollback(target);
+            return 1;
+        } catch (Throwable t) {
+            log.failed("scope_rollback_redefine", target, "<class>", t);
+            failures.add(t);
+            return 0;
         }
     }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026 GapplX
+ * Copyright (C) 2026 GappleX
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,6 @@ import java.lang.reflect.Modifier;
  * <ul>
  *   <li>{@link Level#NORMAL}：普通写入，{@code DEBUG} 级别</li>
  *   <li>{@link Level#FINAL}：写入 {@code final} 字段，{@code WARN} 级别</li>
- *   <li>{@link Level#CRITICAL}：写入非 {@code final} 但可视为敏感的字段，{@code WARN} 级别</li>
  * </ul>
  *
  * <p>本类实例由 {@link Log} 工厂方法创建。</p>
@@ -83,17 +82,12 @@ public final class Audit {
      * @param level 危险级别，见 {@link Level}
      */
     public void fieldWrite(Class<?> owner, String name, int level) {
-        if (level >= Level.CRITICAL) {
+        if (level >= Level.FINAL) {
             logger.warn("write {}.{} [{}] caller={}",
                     owner.getName(), name, flags(owner, name), caller());
-        } else if (level >= Level.FINAL) {
-            logger.warn("write {}.{} [final] caller={}",
+        } else if (logger.isDebugEnabled()) {
+            logger.debug("write {}.{} caller={}",
                     owner.getName(), name, caller());
-        } else {
-            if (logger.isDebugEnabled()) {
-                logger.debug("write {}.{} caller={}",
-                        owner.getName(), name, caller());
-            }
         }
     }
 
@@ -118,6 +112,70 @@ public final class Audit {
     public void constructorNew(Class<?> target) {
         if (logger.isDebugEnabled()) {
             logger.debug("construct {} caller={}", target.getName(), caller());
+        }
+    }
+
+    /**
+     * 记录一次字段回滚（成功）。
+     *
+     * @param owner 字段所属类
+     * @param name  字段名
+     * @param level 危险级别，见 {@link Level#of(Field)}
+     */
+    public void fieldRollback(Class<?> owner, String name, int level) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("rollback {}.{}", owner.getName(), name);
+        }
+    }
+
+    /**
+     * 记录一次字段回滚被跳过（{@code TEST_KEEP} 模式下冲突条目保留现场）。
+     *
+     * @param owner 字段所属类
+     * @param name  字段名
+     * @param level 危险级别，见 {@link Level#of(Field)}
+     */
+    public void fieldRollbackSkipped(Class<?> owner, String name, int level) {
+        logger.warn("rollback SKIPPED {}.{} [{}] caller={}",
+                owner.getName(), name, flags(owner, name), caller());
+    }
+
+    /**
+     * 记录一次 scope 关闭汇总。
+     *
+     * @param mode        提权模式 tag
+     * @param rolledBack  成功回滚的条目数
+     * @param conflicts   冲突条目数（含回滚失败）
+     */
+    public void scopeClosed(String mode, int rolledBack, int conflicts) {
+        logger.info("scope closed mode={} rolledBack={} conflicts={} caller={}",
+                mode, rolledBack, conflicts, caller());
+    }
+
+    /**
+     * 记录一次方法体重定义。
+     *
+     * <p>{@code kind} 是动作类型标识，由调用方提供，用于日志区分
+     * {@code return} / {@code throw} / {@code noop} / {@code function#<id>}
+     * 等不同意图。不记录任何参数值或字节码内容。</p>
+     *
+     * @param owner 方法所属类
+     * @param name  方法名；{@code restore} 动作用 {@code "<restore>"} 占位
+     * @param kind  动作类型标识
+     */
+    public void methodRedefine(Class<?> owner, String name, String kind) {
+        logger.info("redefine {}.{} ({}) caller={}",
+                owner.getName(), name, kind, caller());
+    }
+
+    /**
+     * 记录一次方法体重定义的回滚。
+     *
+     * @param target 被恢复的类
+     */
+    public void redefineRollback(Class<?> target) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("rollback redefine {}", target.getName());
         }
     }
 
@@ -184,7 +242,8 @@ public final class Audit {
      */
     private static String caller() {
         return StackWalker.getInstance()
-                .walk(f -> f.skip(2)
+                .walk(f -> f
+                        .filter(e -> !e.getClassName().startsWith("io.github.gapplex.jrootie."))
                         .findFirst()
                         .map(e -> e.getClassName() + "." + e.getMethodName()
                                 + ":" + e.getLineNumber())
@@ -201,8 +260,20 @@ public final class Audit {
         public static final int NORMAL = 0;
         /** {@code final} 字段，写入属于突破不可变约定。 */
         public static final int FINAL = 1;
-        /** 允许更细粒度地标记敏感字段（当前未被内置使用，供调用方扩展）。 */
-        public static final int CRITICAL = 2;
         private Level() {}
+
+        /**
+         * 按字段修饰符计算写入/回滚的危险级别。
+         *
+         * @param field 目标字段
+         * @return {@link #NORMAL}、{@link #FINAL}
+         *
+         * @since 0.1.1
+         */
+        public static int of(Field field) {
+            int mod = field.getModifiers();
+            if (Modifier.isFinal(mod)) return FINAL;
+            return NORMAL;
+        }
     }
 }

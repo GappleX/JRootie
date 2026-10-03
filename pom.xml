@@ -7,7 +7,7 @@
 
     <groupId>io.github.gapplex</groupId>
     <artifactId>jrootie</artifactId>
-    <version>0.1.0</version>
+    <version>${revision}</version>
     <packaging>jar</packaging>
 
     <name>JRootie</name>
@@ -34,7 +34,7 @@
         <connection>scm:git:https://github.com/GappleX/JRootie.git</connection>
         <developerConnection>scm:git:git@github.com:GappleX/JRootie.git</developerConnection>
         <url>https://github.com/GappleX/JRootie</url>
-        <tag>v0.1.0</tag>
+        <tag>v${revision}</tag>
     </scm>
 
     <properties>
@@ -43,6 +43,7 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <slf4j.version>2.0.18</slf4j.version>
         <junit.jupiter.version>5.10.2</junit.jupiter.version>
+        <revision>0.2.0</revision>
     </properties>
 
     <dependencies>
@@ -50,6 +51,11 @@
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
             <version>${slf4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.ow2.asm</groupId>
+            <artifactId>asm-tree</artifactId>
+            <version>9.10.1</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -106,7 +112,7 @@
                             <Automatic-Module-Name>io.github.gapplex.jrootie</Automatic-Module-Name>
                             <Premain-Class>io.github.gapplex.jrootie.agent.Agent</Premain-Class>
                             <Agent-Class>io.github.gapplex.jrootie.agent.Agent</Agent-Class>
-                            <Can-Redefine-Classes>false</Can-Redefine-Classes>
+                            <Can-Redefine-Classes>true</Can-Redefine-Classes>
                             <Can-Retransform-Classes>false</Can-Retransform-Classes>
                         </manifestEntries>
                     </archive>
@@ -209,6 +215,31 @@
                         <id>attach-javadocs</id>
                         <goals>
                             <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>1.6.0</version>
+                <configuration>
+                    <updatePomFile>true</updatePomFile>
+                    <flattenMode>resolveCiFriendliesOnly</flattenMode>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>flatten.clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
                         </goals>
                     </execution>
                 </executions>

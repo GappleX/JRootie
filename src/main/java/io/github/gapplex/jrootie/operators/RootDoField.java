@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026 GapplX
+ * Copyright (C) 2026 GappleX
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package io.github.gapplex.jrootie.operators;
 
 import io.github.gapplex.jrootie.Audit;
 import io.github.gapplex.jrootie.Log;
-import io.github.gapplex.jrootie.OperateFailedException;
+import io.github.gapplex.jrootie.exceptions.OperateFailedException;
 import io.github.gapplex.jrootie.PrimitiveUtils;
 import io.github.gapplex.jrootie.unsafe.IUnsafe;
 
@@ -108,20 +108,6 @@ public class RootDoField {
         IMPL_LOOKUP = lookup;
         GET_DECLARED_FIELDS_0 = fields;
         this.recorder = recorder;
-    }
-
-    /**
-     * 根据字段修饰符计算写入的危险级别，用于审计日志分级。
-     *
-     * @param field 目标字段
-     * @return {@link Audit.Level#NORMAL}、{@link Audit.Level#FINAL}
-     *         或 {@link Audit.Level#CRITICAL} 之一
-     */
-    private static int level(Field field) {
-        int mod = field.getModifiers();
-        if (Modifier.isFinal(mod)) return 2;
-        if (Modifier.isPrivate(mod) || Modifier.isProtected(mod)) return 1;
-        return 0;
     }
 
     /**
@@ -223,7 +209,7 @@ public class RootDoField {
             Field target = findField(owner, fieldName,
                     value == null ? null : value.getClass(), true, false);
             write(instance, target, value);
-            log.fieldWrite(owner, fieldName, level(target));
+            log.fieldWrite(owner, fieldName, Audit.Level.of(target));
         } catch (OperateFailedException e) {
             log.failed("write_field", owner, fieldName, e);
             throw e;
@@ -285,7 +271,7 @@ public class RootDoField {
             Field target = findField(owner, fieldName,
                     value == null ? null : value.getClass(), true, true);
             writeStatic(target, value);
-            log.fieldWrite(owner, fieldName, level(target));
+            log.fieldWrite(owner, fieldName, Audit.Level.of(target));
         } catch (OperateFailedException e) {
             log.failed("write_static_field", owner, fieldName, e);
             throw e;
@@ -295,8 +281,6 @@ public class RootDoField {
                     "Write static field '" + owner.getName() + "." + fieldName + "' failed.", t);
         }
     }
-
-    // ===== undo 回放专用 API（包级可见，仅供 Rootie.close() 使用） =====
 
     /**
      * 无审计、无 recorder、无类型校验的读取。
@@ -332,8 +316,6 @@ public class RootDoField {
             doWrite(target, field, value);
         }
     }
-
-    // ===== 内部查找 =====
 
     /**
      * 按名字查找字段，并校验“静态/实例”“可写性/可读性”“类型兼容性”。

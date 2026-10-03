@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026 GapplX
+ * Copyright (C) 2026 GappleX
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package io.github.gapplex.jrootie.operators;
 
 import io.github.gapplex.jrootie.Audit;
 import io.github.gapplex.jrootie.Log;
-import io.github.gapplex.jrootie.OperateFailedException;
+import io.github.gapplex.jrootie.exceptions.OperateFailedException;
 import io.github.gapplex.jrootie.unsafe.IUnsafe;
 
 import java.lang.invoke.MethodHandle;

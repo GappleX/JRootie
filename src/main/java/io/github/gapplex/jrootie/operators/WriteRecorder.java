@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026 GapplX
+ * Copyright (C) 2026 GappleX
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 package io.github.gapplex.jrootie.operators;
 
+import io.github.gapplex.jrootie.exceptions.OperateFailedException;
+
 import java.lang.reflect.Field;
 
 /**
@@ -29,7 +31,7 @@ import java.lang.reflect.Field;
  *
  * <p><b>线程约束：</b>实现方（即 {@link Rootie}）负责校验回调发生在
  * 持有线程上，违反时抛
- * {@link io.github.gapplex.jrootie.OperateFailedException}。</p>
+ * {@link OperateFailedException}。</p>
  *
  * @since 0.1.0
  */

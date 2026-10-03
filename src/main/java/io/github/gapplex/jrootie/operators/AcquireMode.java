@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026 GapplX
+ * Copyright (C) 2026 GappleX
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 package io.github.gapplex.jrootie.operators;
+
+import io.github.gapplex.jrootie.exceptions.ScopeCloseException;
 
 import java.util.Optional;
 
@@ -40,7 +42,7 @@ public enum AcquireMode {
      *
      * <p>冲突策略：{@link ConflictPolicy#ROLLBACK_AND_REPORT}——
      * 检测到外部修改仍回滚，并把冲突汇总为
-     * {@link io.github.gapplex.jrootie.ScopeCloseException} 抛出。</p>
+     * {@link ScopeCloseException} 抛出。</p>
      */
     TEST("test"),
 

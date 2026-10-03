@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026 GapplX
+ * Copyright (C) 2026 GappleX
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,7 +33,7 @@ import java.util.Objects;
  *
  * @since 0.1.0
  */
-public final class WriteRecord {
+public final class WriteRecord implements UndoEntry{
 
     private final Object target;
     private final Field field;
