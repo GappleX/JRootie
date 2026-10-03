@@ -1,5 +1,8 @@
 # JRootie
 
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.gapplex/jrootie.svg)](https://central.sonatype.com/artifact/io.github.gapplex/jrootie)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 > **仅用于 JVM 内部研究、测试与安全教育。**  
 > 本项目假定短生命周期进程、测试级 classpath、进程级 `-javaagent` 参数。  
 > **不要放进生产 classpath。** 即使代码路径从不调用它，JVM 参数也可能泄漏到生产环境。
@@ -8,39 +11,80 @@
 
 ## 这是什么
 
-JRootie 是一个基于反射的 JVM 内部访问工具包。它通过 `MethodHandles.Lookup.IMPL_LOOKUP` 与 `Unsafe` 组合，绕过常规访问检查，读写任意字段、调用任意方法、构造任意对象——包括 `private`、`final`、`static final`。
+JRootie 是一个 JVM 内部访问工具包。它通过 `MethodHandles.Lookup.IMPL_LOOKUP`、`Unsafe` 与 `Instrumentation` 组合，绕过常规访问检查，读写任意字段、调用任意方法、构造任意对象、**重定义任意方法体**——包括 `private`、`final`、`static final`，以及 JDK 内部类。
 
-它提供**可控的自动恢复**：以 `Rootie.acquireTest()` 打开的作用域会记录所有字段写入，`close()` 时按 LIFO 回滚，让测试对 JVM 全局状态的破坏在退出时自动撤销。
+它提供**可控的自动恢复**：以 `Rootie.acquireTest()` 打开的作用域会记录字段写入与方法体重定义，`close()` 时按 LIFO 回滚，让测试对 JVM 全局状态的破坏在退出时自动撤销。
 
-**它不做什么 / 不保证什么：**
+**能力矩阵：**
+
+| 操作 | 入口 | 覆盖范围 |
+|---|---|---|
+| 字段读写 | `rtdoField()` | 实例 / 静态，含 `final` |
+| 方法调用 | `rtdoMethod()` | 实例 / 静态，含 `private` |
+| 构造实例 | `rtdoConstructor()` | 含 `private` 构造器；`allocate()` 无构造分配 |
+| 类枚举 | `rtdoClass()` | 声明类（含 `private` 成员类） |
+| 方法体重定义 | `rtdoRedefine()` | 应用类 + JDK 内部类 |
+
+**它不做什么：**
 
 - 不追踪方法调用的副作用
 - 不恢复字段所指向对象的内容
 - 不做并行执行检测
 - 不试图规避 JIT 对 `static final` 的稳定值优化
+- 不允许增删字段、修改方法签名、修改父类或接口列表（JVM 硬约束）
 
 ---
 
 ## 快速开始
 
+### 依赖
+
+```xml
+<dependency>
+    <groupId>io.github.gapplex</groupId>
+    <artifactId>jrootie</artifactId>
+    <version>0.2.0</version>
+    <scope>test</scope>
+</dependency>
+```
+
+> **使用 `rtdoRedefine()` 时需要 ASM**。JRootie 未 shade ASM，如用 redefine 功能，需额外声明：
+>
+> ```xml
+> <dependency>
+>     <groupId>org.ow2.asm</groupId>
+>     <artifactId>asm</artifactId>
+>     <version>9.10.1</version>
+>     <scope>test</scope>
+> </dependency>
+> <dependency>
+>     <groupId>org.ow2.asm</groupId>
+>     <artifactId>asm-tree</artifactId>
+>     <version>9.10.1</version>
+>     <scope>test</scope>
+> </dependency>
+> ```
+
+### 第一个例子
+
 ```java
 import io.github.gapplex.jrootie.operators.Rootie;
-import io.github.gapplex.jrootie.operators.RootDoField;
 
-import java.util.Map;
+import java.util.Objects;
 
 public class Demo {
     public static void main(String[] args) {
         try (Rootie r = Rootie.acquireTest()) {
-            RootDoField f = r.rtdoField();
+            // 用 lambda 替换 JDK 内部方法的行为
+            r.rtdoRedefine().replace(
+                    Objects.class, "toString",
+                    new Class<?>[]{Object.class},
+                    ctx -> "hacked:" + ctx.arg(0));
 
-            // 破坏一个不可变 Map
-            Map<String, Object> m = Map.of("hi", "1");
-            f.setFieldValue(m, "v0", "hacked");
-            System.out.println(m);   // {hi=hacked}
-
-            // close() 自动回滚
+            System.out.println(Objects.toString("hi"));   // hacked:hi
         }
+        // close() 后 Objects.toString 恢复原行为
+        System.out.println(Objects.toString("hi"));       // hi
     }
 }
 ```
@@ -48,10 +92,10 @@ public class Demo {
 启动命令：
 
 ```bash
-java -javaagent:/abs/path/to/jrootie-0.1.0.jar -jar yourapp.jar
+java -javaagent:/abs/path/to/jrootie-0.2.0.jar -jar yourapp.jar
 ```
 
-> JDK 9–24 无需 `-javaagent`，可直接运行。  
+> JDK 9–24 无需 `-javaagent`，可直接运行（但无法使用 JDK 内部类的 redefine）。  
 > JDK 25+ 使用上述命令加载 agent。
 
 ---
@@ -60,8 +104,8 @@ java -javaagent:/abs/path/to/jrootie-0.1.0.jar -jar yourapp.jar
 
 | JDK | 启动参数 | Unsafe 实现 | 备注 |
 |---|---|---|---|
-| 9 – 24 | 无 | `sun.misc.Unsafe` | 开箱即用 |
-| 25+ | `-javaagent:.../jrootie-0.1.0.jar` | `jdk.internal.misc.Unsafe` | MR-JAR 加载 25 专用实现 |
+| 9 – 24 | 无 | `sun.misc.Unsafe` | 开箱即用；`rtdoRedefine()` 对 JDK 内部类受限 |
+| 25+ | `-javaagent:.../jrootie-0.2.0.jar` | `jdk.internal.misc.Unsafe` | MR-JAR 加载 25 专用实现；JDK 内部类 redefine 完整支持 |
 
 **JDK 9–24 零配置。JDK 25+ 一个 `-javaagent`。**
 
@@ -71,21 +115,179 @@ java -javaagent:/abs/path/to/jrootie-0.1.0.jar -jar yourapp.jar
 
 ---
 
+## 五个操作器
+
+### `rtdoField()` —— 字段读写
+
+```java
+RootDoField f = r.rtdoField();
+
+// 实例字段
+String name = f.getFieldValue(obj, "name", String.class);
+f.setFieldValue(obj, "name", "new");
+
+// 静态字段
+int x = f.getStaticFieldValue(Foo.class, "x", int.class);
+f.setStaticFieldValue(Foo.class, "x", 999);
+```
+
+字段查询沿继承链自顶向下。类型校验先对基本类型包装，再按 `==` 精确比较。
+
+### `rtdoMethod()` —— 方法调用
+
+```java
+Object result = r.rtdoMethod().invoke(
+        instance, "methodName",
+        new Class<?>[]{int.class, String.class},
+        1, "arg");
+
+Object staticResult = r.rtdoMethod().invokeStatic(
+        Foo.class, "staticMethod",
+        new Class<?>[]{},
+        new Object[0]);
+```
+
+参数匹配规则同字段：基本类型包装后按 `==` 比较，不做协变匹配。
+
+### `rtdoConstructor()` —— 构造实例
+
+```java
+Foo foo = r.rtdoConstructor().newInstance(
+        Foo.class,
+        new Class<?>[]{String.class, String.class},
+        "John", "Black");
+
+// 无构造器分配（字段保持 JVM 默认值）
+Foo empty = r.rtdoClass().allocate(Foo.class);
+```
+
+### `rtdoClass()` —— 类枚举
+
+```java
+Class<?>[] inner = r.rtdoClass().getDeclaredClasses(Owner.class);
+```
+
+### `rtdoRedefine()` —— 方法体重定义
+
+见下一节。
+
+---
+
+## 方法体重定义
+
+通过 `Instrumentation.redefineClasses` 替换已加载类的方法体。JVM 硬约束：不得增删字段、不得增删方法、不得修改方法签名、不得修改父类或接口列表。
+
+**所有 redefine 接口都要求显式传入 `paramTypes`**，与 `Class.getDeclaredMethod(String, Class[])` 语义一致。无参方法传 `new Class<?>[0]`。
+
+### 四个接口
+
+```java
+RootDoRedefine redef = r.rtdoRedefine();
+
+// 1. 方法体只返回常量
+redef.makeReturn(Foo.class, "compute", new Class<?>[0], 42);
+
+// 2. 方法体只抛异常
+redef.makeThrow(Foo.class, "fetch", new Class<?>[0], new IOException("injected"));
+
+// 3. 方法体清空
+redef.makeNoOp(Foo.class, "log", new Class<?>[]{String.class});
+
+// 4. 用 lambda 替换方法体（任意逻辑）
+redef.replace(Foo.class, "compute",
+        new Class<?>[]{int.class},
+        ctx -> {
+            int x = ctx.arg(0);
+            return x * 2;
+        });
+```
+
+### `replace` 的 `Context`
+
+```java
+public final class Context {
+    public Object receiver();       // 静态方法返回 null
+    public Object[] args();
+    public int argCount();
+    public <T> T arg(int index);    // 按索引取参数
+}
+```
+
+桥接字节码自动装箱参数、调用 `MethodRegistry`、拆箱返回值。装箱与拆箱对称——`boolean` 走 `Boolean.booleanValue()`，不走 `Integer.intValue()`。
+
+### 类加载器可见性
+
+`MethodRegistry` 与 `Context` 由 Agent 在启动时注入 bootstrap classloader，因此：
+
+- **应用类**（同一 classloader）：直接可见
+- **JDK 内部类**（bootstrap classloader）：Agent 已处理可见性，同时开放了 `java.base` 的 read 权限
+
+无需用户额外配置。
+
+### 手动快照 / 恢复
+
+```java
+byte[] original = redef.snapshot(Foo.class);
+redef.replace(Foo.class, "compute", new Class<?>[0], ctx -> 42);
+// ... 测试
+redef.restore(Foo.class, original);
+```
+
+`snapshot` 返回 JVM 当前生效版本（含此前累积的 redefine），不是磁盘原始版本。
+
+---
+
 ## 运行模式
 
 | 模式 | 入口 | 自动恢复 | 适用场景 |
 |---|---|---|---|
 | `NORMAL` | `Rootie.acquire()` | 无 | 只读探查、调用方法、能力测试 |
-| `TEST` | `Rootie.acquireTest()` | LIFO 回滚；冲突时回滚并抛异常 | 需要临时改状态并恢复的测试 |
-| `TEST_KEEP` | `Rootie.acquireTestKeep()` | 非冲突回滚；冲突时保留现场并抛异常 | 调试字段冲突 |
+| `TEST` | `Rootie.acquireTest()` | LIFO 回滚；字段冲突时回滚并抛异常 | 需要临时改状态并恢复的测试 |
+| `TEST_KEEP` | `Rootie.acquireTestKeep()` | 字段非冲突回滚；字段冲突保留现场并抛异常。redefine 无条件回滚 | 调试字段冲突 |
 
 `NORMAL` 模式无 undo-log，零额外开销；`close()` 是 no-op，可以不写 try-with-resources。
 
 ---
 
+## 自动恢复
+
+`TEST` / `TEST_KEEP` 模式下，undo-log 覆盖两类操作：
+
+### 字段写入
+
+写回旧值。旧值在**写入瞬间**读取，不是 scope 打开时缓存。
+
+### 方法体重定义
+
+用 redefine 之前的字节码覆盖。同时注销 `replace` 注册的替换函数。
+
+### 回放顺序
+
+严格 LIFO（后进先出）。字段写入与方法体 redefine 混在同一个栈中，按操作发生顺序回放。
+
+```java
+try (Rootie r = Rootie.acquireTest()) {
+    r.rtdoField().setFieldValue(obj, "a", 1);                    // 栈 1
+    r.rtdoRedefine().makeReturn(Foo.class, "b", EMPTY, 2);       // 栈 2
+    r.rtdoField().setFieldValue(obj, "c", 3);                    // 栈 3
+}
+// close 时：3 → 2 → 1
+```
+
+### 回滚的语义差异
+
+| 类型 | 冲突检测 | 冲突时动作 |
+|---|---|---|
+| 字段 | **有**（当前值 vs scope 写入值） | `TEST`：回滚并报错；`TEST_KEEP`：保留现场并报错 |
+| redefine | **无** | 无条件覆盖为旧字节码 |
+
+**redefine 不做冲突检测的理由**：字段是单值，可以判断“当前值是否等于写入值”；字节码是整体，任何一次 redefine 都会让当前版本与先前记录不等，检测无意义。多个 scope 改同一个类时，后关闭者覆盖先关闭者。
+
+---
+
 ## 自动恢复的边界
 
-**undo-log 只覆盖字段写入。** 以下动作不被追踪、不被回滚：
+**undo-log 只覆盖字段写入与方法体重定义。** 以下动作不被追踪、不被回滚：
 
 ### 1. 方法调用副作用
 
@@ -149,7 +351,7 @@ setStaticFieldValue(System.class, "out", newStream);  // (2) old = null
 
 ---
 
-## 冲突检测
+## 冲突检测（字段）
 
 `close()` 时逐条检查：字段当前值是否等于 scope 写入值。
 
@@ -208,9 +410,12 @@ try (Rootie r = Rootie.acquireTest()) {
 
 | 事件 | 级别 |
 |---|---|
+| 提权（`acquire`） | `INFO` |
 | 字段写入 `final` / 敏感字段 | `WARN` |
 | 普通字段写入 | `DEBUG` |
+| 方法体 redefine | `INFO` |
 | 字段读取 | `TRACE` |
+| 方法调用 / 构造 | `DEBUG` |
 | 操作失败 | `ERROR`（只记异常类名，不记 message） |
 
 需要在测试里看到日志，加入 provider：
@@ -232,7 +437,9 @@ org.slf4j.simpleLogger.defaultLogLevel=warn
 
 ---
 
-## `static final` 与 JIT 的边界
+## JVM 硬边界
+
+### `static final` 与 JIT
 
 通过 Unsafe 修改 `static final` 字段，在 JLS 语义下是**未定义的**。
 
@@ -242,6 +449,27 @@ JRootie 不试图规避这一点，也无法规避。**涉及 `static final` 修
 
 `-XX:-TieredCompilation` 不能作为解药——它只降低编译激进程度，不保证稳定值优化不生效。
 
+### redefine JDK 核心方法会级联崩 JVM
+
+`ArrayList.size()`、`HashMap.get()`、`String.length()` 这类被 JVM 自身大量调用的方法，一旦 redefine，JVM 内部组件（如 `StringConcatFactory`、`InvokerBytecodeGenerator`）会拿到错误的值，级联崩溃。
+
+**这不是 JRootie 的 bug，是 redefine 的固有性质。** 任何工具——Byte Buddy、Mockito inline、手写 ASM——做同样的事都会遇到。
+
+选择 redefine 目标时，优先考虑调用者少的 JDK 方法（如 `Objects.toString`），避免核心方法。
+
+### 类结构不可变
+
+`redefineClasses` 只允许改方法体。以下操作 JVM 拒绝：
+
+- 加/删字段
+- 加/删方法
+- 修改方法签名
+- 修改父类或接口列表
+
+### 方法调用副作用不可回滚
+
+`replace` 替换了方法体，但用户 lambda 内的副作用（IO、状态修改、外部调用）不在 undo-log 覆盖范围。
+
 ---
 
 ## 已知不受支持
@@ -250,6 +478,8 @@ JRootie 不试图规避这一点，也无法规避。**涉及 `static final` 修
 - **修改 `Enum` 常量**：同上，且 `Class.getEnumConstants()` 有缓存。
 - **动态模块上的 `redefineModule`**：agent 只在启动阶段改一次 `java.base`，不再重复。
 - **GraalVM Native Image**：未测试。
+- **强制杀死线程**：JVM 不提供此能力。
+- **撤销模块开放**：`Instrumentation.redefineModule` 只能加，不能撤。
 
 ---
 
@@ -263,9 +493,9 @@ mvn clean package
 
 产物：
 
-- `target/jrootie-0.1.0.jar`：主 JAR，同时是 agent JAR
-- `target/jrootie-0.1.0-sources.jar`
-- `target/jrootie-0.1.0-javadoc.jar`
+- `target/jrootie-0.2.0.jar`：主 JAR，同时是 agent JAR
+- `target/jrootie-0.2.0-sources.jar`
+- `target/jrootie-0.2.0-javadoc.jar`
 
 `META-INF/versions/25/` 下是 JDK 25 专用实现（`UnsafeProvider` + `JdkInternalUnsafe`）。
 
