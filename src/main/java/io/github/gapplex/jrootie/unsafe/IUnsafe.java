@@ -134,7 +134,7 @@ public interface IUnsafe {
     /**
      * 返回底层实现的版本描述，用于诊断与审计。
      *
-     * @return 例如 {@code "sun.misc.Unsafe (Java 9+)"}
+     * @return 例如 {@code "jdk.internal.misc.Unsafe (JDK 17+)"}
      */
     String version();
 }

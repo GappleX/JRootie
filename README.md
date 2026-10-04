@@ -43,7 +43,7 @@ JRootie 是一个 JVM 内部访问工具包。它通过 `MethodHandles.Lookup.IM
 <dependency>
     <groupId>io.github.gapplex</groupId>
     <artifactId>jrootie</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -92,26 +92,28 @@ public class Demo {
 启动命令：
 
 ```bash
-java -javaagent:/abs/path/to/jrootie-0.2.0.jar -jar yourapp.jar
+java -javaagent:/abs/path/to/jrootie-0.3.0.jar -jar yourapp.jar
 ```
 
-> JDK 9–24 无需 `-javaagent`，可直接运行（但无法使用 JDK 内部类的 redefine）。  
-> JDK 25+ 使用上述命令加载 agent。
+> 所有 JDK 版本都需要 `-javaagent`。JDK 11+ 均支持。
+> JDK 17+ 通过 MR-JAR 加载 `getReference` / `putReference` 实现，
+> JDK 11–16 使用 `getObject` / `putObject`。
 
 ---
 
 ## JDK 支持矩阵
 
-| JDK | 启动参数 | Unsafe 实现 | 备注 |
-|---|---|---|---|
-| 9 – 24 | 无 | `sun.misc.Unsafe` | 开箱即用；`rtdoRedefine()` 对 JDK 内部类受限 |
-| 25+ | `-javaagent:.../jrootie-0.2.0.jar` | `jdk.internal.misc.Unsafe` | MR-JAR 加载 25 专用实现；JDK 内部类 redefine 完整支持 |
+| JDK | 启动参数 | `jdk.internal.misc.Unsafe` 引用读写 |
+|---|---|---|
+| 11 – 16 | `-javaagent:.../jrootie-0.3.0.jar` | `getObject` / `putObject` |
+| 17+ | `-javaagent:.../jrootie-0.3.0.jar` | `getReference` / `putReference`（MR-JAR 版本选择） |
 
-**JDK 9–24 零配置。JDK 25+ 一个 `-javaagent`。**
+**所有 JDK 版本都需要 agent。** 它提供：
 
-- 不需要 `--add-opens`。agent 在运行期通过 `Instrumentation.redefineModule` 自动开放所需模块。
-- `-javaagent` 必须使用绝对路径，或使用 IDEA 宏 `$USER_HOME$` / `$PROJECT_DIR$`。
-- `-javaagent` 必须位于 `-jar` / `-cp` 之前。
+- `Instrumentation` 用于 `redefineModule`，开放 `java.base/jdk.internal.misc` 给当前模块
+- 注入 `MethodRegistry` / `Context` 到 bootstrap classloader，使 JDK 内部类的 redefine 可用
+
+不需要 `--add-opens`。所有模块配置由 agent 在运行期完成。
 
 ---
 
@@ -493,9 +495,9 @@ mvn clean package
 
 产物：
 
-- `target/jrootie-0.2.0.jar`：主 JAR，同时是 agent JAR
-- `target/jrootie-0.2.0-sources.jar`
-- `target/jrootie-0.2.0-javadoc.jar`
+- `target/jrootie-0.3.0.jar`：主 JAR，同时是 agent JAR
+- `target/jrootie-0.3.0-sources.jar`
+- `target/jrootie-0.3.0-javadoc.jar`
 
 `META-INF/versions/25/` 下是 JDK 25 专用实现（`UnsafeProvider` + `JdkInternalUnsafe`）。
 

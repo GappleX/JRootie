@@ -15,36 +15,47 @@
  */
 package io.github.gapplex.jrootie.unsafe;
 
-import sun.misc.Unsafe;
+import io.github.gapplex.jrootie.agent.InstrumentationHolder;
 
+import java.lang.instrument.Instrumentation;
 import java.lang.reflect.Field;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * {@link IUnsafe} 的全局提供者。
  *
- * <p>通过反射访问 {@code sun.misc.Unsafe#theUnsafe} 字段获取唯一实例，
- * 并包装为 {@link SunMiscUnsafe} 缓存。获取成功后不再重复反射。</p>
+ * <p>统一使用 {@code jdk.internal.misc.Unsafe}。通过 agent 注入的
+ * {@link Instrumentation#redefineModule} 在运行期开放
+ * {@code java.base/jdk.internal.misc} 给当前模块，无需 {@code --add-opens}。</p>
  *
- * <p><b>兼容性：</b>在部分 JDK 上，由于 JPMS 强封装，访问
- * {@code sun.misc.Unsafe} 需要添加 JVM 参数：</p>
- * <pre>{@code --add-opens java.base/sun.misc=ALL-UNNAMED}</pre>
+ * <p><b>MR-JAR 版本选择</b>：{@code JdkInternalUnsafe} 在 jar 里存在两份——
+ * base 版（JDK 11–16，用 {@code getObject} / {@code putObject}）与
+ * {@code META-INF/versions/17/} 版（JDK 17+，用 {@code getReference} /
+ * {@code putReference}）。JVM 加载本类里 {@code new JdkInternalUnsafe(u)} 的
+ * 符号引用时，自动按运行 JDK 选择正确版本。</p>
  *
- * @since 0.1.0
+ * <p><b>强制 agent</b>：所有 JDK 版本都需要
+ * {@code -javaagent:jrootie.jar}。没有 agent 直接抛
+ * {@link IllegalStateException}。</p>
+ *
+ * @since 0.3.0
  */
 public final class UnsafeProvider {
 
-    /** 已缓存的 {@link IUnsafe} 实例，双重检查锁定。 */
+    private static final String UNSAFE_CLASS = "jdk.internal.misc.Unsafe";
+    private static final String INTERNAL_PACKAGE = "jdk.internal.misc";
+
     private static volatile IUnsafe CACHED;
 
-    private UnsafeProvider() {
-    }
+    private UnsafeProvider() {}
 
     /**
      * 返回全局唯一的 {@link IUnsafe} 实例。
      *
      * @return {@link IUnsafe} 实例
-     * @throws IllegalStateException 无法获取 {@code sun.misc.Unsafe} 时
-     *                               （常见原因：模块未开放、缺少必要 JVM 参数）
+     * @throws IllegalStateException agent 未加载，或无法获取
+     *                               {@code jdk.internal.misc.Unsafe} 时
      */
     public static IUnsafe get() {
         IUnsafe cached = CACHED;
@@ -60,22 +71,38 @@ public final class UnsafeProvider {
         }
     }
 
-    /**
-     * 执行真正的获取逻辑：反射 {@code theUnsafe} 字段并包装。
-     *
-     * @return 包装后的 {@link IUnsafe}
-     * @throws IllegalStateException 反射失败时
-     */
     private static IUnsafe doGet() {
+        Instrumentation inst = InstrumentationHolder.get();
+        if (inst == null) {
+            throw new IllegalStateException(
+                    "jrootie requires -javaagent:jrootie.jar. "
+                            + "All JDK versions need the agent.");
+        }
+
         try {
-            Field f = Unsafe.class.getDeclaredField("theUnsafe");
-            f.setAccessible(true);
-            Unsafe u = (Unsafe) f.get(null);
-            return new SunMiscUnsafe(u);
+            Class<?> unsafeClass = Class.forName(UNSAFE_CLASS);
+            Module src = unsafeClass.getModule();
+            Module target = UnsafeProvider.class.getModule();
+
+            if (inst.isModifiableModule(src)
+                    && !src.isOpen(INTERNAL_PACKAGE, target)) {
+                inst.redefineModule(
+                        src,
+                        Set.of(),
+                        Map.of(),
+                        Map.of(INTERNAL_PACKAGE, Set.of(target)),
+                        Set.of(),
+                        Map.of());
+            }
+
+            Field theUnsafe = unsafeClass.getDeclaredField("theUnsafe");
+            theUnsafe.setAccessible(true);
+            Object u = theUnsafe.get(null);
+
+            return new JdkInternalUnsafe(u);
         } catch (Throwable t) {
             throw new IllegalStateException(
-                    "Cannot acquire sun.misc.Unsafe. On Java 16+ this requires "
-                            + "--add-opens java.base/sun.misc=ALL-UNNAMED", t);
+                    "Cannot acquire jdk.internal.misc.Unsafe via agent", t);
         }
     }
 }

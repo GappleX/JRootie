@@ -637,7 +637,7 @@ public class Rootie implements AutoCloseable {
     /**
      * 返回底层 {@link IUnsafe} 实现所报告的平台版本字符串。
      *
-     * @return 例如 {@code "sun.misc.Unsafe (Java 9+)"}
+     * @return 例如 {@code "jdk.internal.misc.Unsafe (JDK 17+)"}
      */
     public String unsafeVersion() {
         return unsafe.version();

@@ -38,12 +38,12 @@
     </scm>
 
     <properties>
-        <maven.compiler.release>9</maven.compiler.release>
+        <maven.compiler.release>11</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <slf4j.version>2.0.18</slf4j.version>
         <junit.jupiter.version>5.10.2</junit.jupiter.version>
-        <revision>0.2.0</revision>
+        <revision>0.3.0</revision>
     </properties>
 
     <dependencies>
@@ -78,23 +78,21 @@
                     <execution>
                         <id>default-compile</id>
                         <configuration>
-                            <release>9</release>
+                            <release>11</release>
                         </configuration>
                     </execution>
 
                     <execution>
-                        <id>compile-java25</id>
+                        <id>compile-java17</id>
                         <phase>compile</phase>
-                        <goals>
-                            <goal>compile</goal>
-                        </goals>
+                        <goals><goal>compile</goal></goals>
                         <configuration>
-                            <release>25</release>
+                            <release>17</release>
                             <compileSourceRoots>
-                                <compileSourceRoot>${project.basedir}/src/main/java25</compileSourceRoot>
+                                <compileSourceRoot>${project.basedir}/src/main/java17</compileSourceRoot>
                             </compileSourceRoots>
                             <outputDirectory>
-                                ${project.build.outputDirectory}/META-INF/versions/25
+                                ${project.build.outputDirectory}/META-INF/versions/17
                             </outputDirectory>
                         </configuration>
                     </execution>
@@ -109,7 +107,6 @@
                     <archive>
                         <manifestEntries>
                             <Multi-Release>true</Multi-Release>
-                            <Automatic-Module-Name>io.github.gapplex.jrootie</Automatic-Module-Name>
                             <Premain-Class>io.github.gapplex.jrootie.agent.Agent</Premain-Class>
                             <Agent-Class>io.github.gapplex.jrootie.agent.Agent</Agent-Class>
                             <Can-Redefine-Classes>true</Can-Redefine-Classes>

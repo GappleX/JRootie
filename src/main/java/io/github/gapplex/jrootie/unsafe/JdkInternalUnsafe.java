@@ -20,7 +20,26 @@ import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
+/**
+ * {@link IUnsafe} 基于 {@code jdk.internal.misc.Unsafe} 的实现（base 版本）。
+ *
+ * <p><b>本类为 JDK 11–16 的实现</b>，引用读写使用 {@code getObject} /
+ * {@code putObject}。JDK 17+ 由 MR-JAR 加载
+ * {@code META-INF/versions/17/} 下的替代实现（使用 {@code getReference} /
+ * {@code putReference}）。</p>
+ *
+ * <p><b>纯反射实现</b>：base 源根以 {@code --release 11} 编译，
+ * {@code jdk.internal.misc} 不在 {@code ct.sym} 中，无法直接 import。
+ * 全程通过 {@link Class#forName(String)} + {@link MethodHandles.Lookup#unreflect}
+ * 获取方法句柄。</p>
+ *
+ * <p>可见性由 {@link UnsafeProvider} 通过 agent 的
+ * {@code Instrumentation#redefineModule} 保证。</p>
+ *
+ * @since 0.3.0
+ */
 final class JdkInternalUnsafe implements IUnsafe {
+
     private final Object u;
 
     private final MethodHandle objectFieldOffset;
@@ -57,9 +76,8 @@ final class JdkInternalUnsafe implements IUnsafe {
         staticFieldOffset = mh(lookup, c, "staticFieldOffset", Field.class);
         staticFieldBase   = mh(lookup, c, "staticFieldBase",   Field.class);
 
-        // ↓ 名字换成 Reference
-        getObject  = mh(lookup, c, "getReference", Object.class, long.class);
-        putObject  = mh(lookup, c, "putReference", Object.class, long.class, Object.class);
+        getObject = mh(lookup, c, "getObject", Object.class, long.class);
+        putObject = mh(lookup, c, "putObject", Object.class, long.class, Object.class);
 
         getInt     = mh(lookup, c, "getInt",     Object.class, long.class);
         putInt     = mh(lookup, c, "putInt",     Object.class, long.class, int.class);
@@ -212,22 +230,24 @@ final class JdkInternalUnsafe implements IUnsafe {
         catch (Throwable t) { throw rethrow(t); }
     }
 
+    // ===== allocate =====
+
     @Override public Object allocateInstance(Class<?> type) throws InstantiationException {
         try {
             return allocateInstance.invoke(u, type);
         } catch (Throwable t) {
-            if (t instanceof InstantiationException ie) throw ie;
+            if (t instanceof InstantiationException) throw (InstantiationException) t;
             throw rethrow(t);
         }
     }
 
     @Override public String version() {
-        return "jdk.internal.misc.Unsafe (Java 25+, Agent Mode)";
+        return "jdk.internal.misc.Unsafe (JDK 11-16)";
     }
 
     private static RuntimeException rethrow(Throwable t) {
-        if (t instanceof RuntimeException re) throw re;
-        if (t instanceof Error e) throw e;
+        if (t instanceof RuntimeException) throw (RuntimeException) t;
+        if (t instanceof Error) throw (Error) t;
         return new IllegalStateException(t);
     }
 }

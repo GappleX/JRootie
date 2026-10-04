@@ -20,9 +20,12 @@ package io.github.gapplex.jrootie.exceptions;
  *
  * <p>通常由以下原因触发：</p>
  * <ul>
- *   <li>无法获取 {@code sun.misc.Unsafe}（缺少 {@code --add-opens}）</li>
- *   <li>无法通过反射读取 {@code MethodHandles.Lookup.IMPL_LOOKUP}</li>
+ *   <li>agent 未加载（缺少 {@code -javaagent:jrootie.jar}）</li>
+ *   <li>无法通过 {@code Instrumentation#redefineModule} 开放
+ *       {@code java.base/jdk.internal.misc}</li>
+ *   <li>无法获取 {@code jdk.internal.misc.Unsafe.theUnsafe}</li>
  *   <li>无法解析 {@code Class#getDeclaredXxx0} 等原生方法句柄</li>
+ *   <li>无法通过反射读取 {@code MethodHandles.Lookup.IMPL_LOOKUP}</li>
  * </ul>
  *
  * @since 0.1.0
