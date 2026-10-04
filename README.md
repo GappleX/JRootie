@@ -46,7 +46,7 @@ JRootie 是一个 JVM 内部访问工具包。它通过 `MethodHandles.Lookup.IM
 <dependency>
     <groupId>io.github.gapplex</groupId>
     <artifactId>jrootie</artifactId>
-    <version>0.3.1</version>
+    <version>0.3.2</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -95,7 +95,7 @@ public class Demo {
 启动命令：
 
 ```bash
-java -javaagent:/abs/path/to/jrootie-0.3.1.jar -jar yourapp.jar
+java -javaagent:/abs/path/to/jrootie-0.3.2.jar -jar yourapp.jar
 ```
 
 > 所有 JDK 版本都需要 `-javaagent`。JDK 11+ 均支持。
@@ -108,8 +108,8 @@ java -javaagent:/abs/path/to/jrootie-0.3.1.jar -jar yourapp.jar
 
 | JDK | 启动参数 | `jdk.internal.misc.Unsafe` 引用读写 |
 |---|---|---|
-| 11 – 16 | `-javaagent:.../jrootie-0.3.1.jar` | `getObject` / `putObject` |
-| 17+ | `-javaagent:.../jrootie-0.3.1.jar` | `getReference` / `putReference`（MR-JAR 版本选择） |
+| 11 – 16 | `-javaagent:.../jrootie-0.3.2.jar` | `getObject` / `putObject` |
+| 17+ | `-javaagent:.../jrootie-0.3.2.jar` | `getReference` / `putReference`（MR-JAR 版本选择） |
 
 **所有 JDK 版本都需要 agent。** 它提供：
 
@@ -211,6 +211,7 @@ redef.replace(Foo.class, "compute",
 
 ```java
 public final class Context {
+    public Class<?> owner();        // 方法所属的类
     public Object receiver();       // 静态方法返回 null
     public boolean isStatic();      // == (receiver() == null)
     public Object[] args();
@@ -221,9 +222,11 @@ public final class Context {
 
 桥接字节码自动装箱参数、调用 `MethodRegistry`、拆箱返回值。装箱与拆箱对称——`boolean` 走 `Boolean.booleanValue()`，不走 `Integer.intValue()`。
 
+**`owner()` 的来源**：由 `RootDoRedefine` 在写入桥接字节码时嵌入（`ldc` 一个 Class 常量），是方法定义所在的类。即使 receiver 是子类实例，也返回方法声明所在的父类。接口 static 方法、父类方法 redefine 时都准确。
+
 ### 便捷操作：`ContextOps`
 
-在 lambda 里频繁读写 `receiver` 的字段、调用 `receiver` 的方法时，每次都传 `ctx.receiver()` 冗余。`ContextOps` 把 `receiver` 绑定为默认目标：
+在 lambda 里频繁读写 `receiver` 的字段、调用 `receiver` 的方法，或对 `ctx.owner()`（被 redefine 的方法所属类）操作静态成员时，每次都显式传目标冗余。`ContextOps` 把两个目标绑定为默认：
 
 ```java
 try (Rootie r = Rootie.acquireTest()) {
@@ -232,24 +235,35 @@ try (Rootie r = Rootie.acquireTest()) {
             ctx -> {
                 ContextOps ops = new ContextOps(ctx, r);
 
+                // 实例操作——目标 = ctx.receiver()
                 Object[] table = ops.field("table", Object[].class);
                 table[ctx.arg(0)] = "hacked";
                 ops.setField("cache", null);
                 ops.invoke("notifyChanged", new Class<?>[0]);
+
+                // 静态操作——目标 = ctx.owner()
+                int counter = ops.staticField("count", int.class);
+                ops.setStaticField("count", counter + 1);
+                ops.invokeStatic("log",
+                        new Class<?>[]{String.class}, "updated");
+
                 return null;
             });
 }
 ```
 
-| 方法 | 等价于 |
-|---|---|
-| `ops.field(name, type)` | `r.rtdoField().getFieldValue(ctx.receiver(), name, type)` |
-| `ops.setField(name, value)` | `r.rtdoField().setFieldValue(ctx.receiver(), name, value)` |
-| `ops.invoke(name, paramTypes, args)` | `r.rtdoMethod().invoke(ctx.receiver(), name, paramTypes, args)` |
+| 方法 | 目标 | 等价于 |
+|---|---|---|
+| `ops.field(name, type)` | `ctx.receiver()` | `r.rtdoField().getFieldValue(ctx.receiver(), name, type)` |
+| `ops.setField(name, value)` | `ctx.receiver()` | `r.rtdoField().setFieldValue(ctx.receiver(), name, value)` |
+| `ops.invoke(name, paramTypes, args)` | `ctx.receiver()` | `r.rtdoMethod().invoke(ctx.receiver(), name, paramTypes, args)` |
+| `ops.staticField(name, type)` | `ctx.owner()` | `r.rtdoField().getStaticFieldValue(ctx.owner(), name, type)` |
+| `ops.setStaticField(name, value)` | `ctx.owner()` | `r.rtdoField().setStaticFieldValue(ctx.owner(), name, value)` |
+| `ops.invokeStatic(name, paramTypes, args)` | `ctx.owner()` | `r.rtdoMethod().invokeStatic(ctx.owner(), name, paramTypes, args)` |
 
-`ContextOps` 只作用于 `receiver` 自身。操作其他对象时，直接用 `r.rtdoField()` / `r.rtdoMethod()`。
+实例操作仅在实例方法的 lambda 中可用——receiver 为 `null` 时抛 `IllegalStateException`，错误信息指向静态变体。静态操作在实例方法和静态方法的 lambda 中都能用。
 
-**`ctx.invoke` 的异常语义**：方法自身抛出的异常被 `RootDoMethod.invoke` 包装为 `OperateFailedException`，原始异常在 `getCause()`。这与原方法直接调用的行为不同——需要原始类型时，用 `Unsafe.throwException` 或直接调 `RootDoMethod`。
+**`ops.invoke` / `ops.invokeStatic` 的异常语义**：方法自身抛出的异常被 `RootDoMethod` 包装为 `OperateFailedException`，原始异常在 `getCause()`。这与原方法直接调用的行为不同——需要原始类型时，用 `Unsafe.throwException` 或直接调 `RootDoMethod`。
 
 ### 类加载器可见性
 
@@ -515,7 +529,7 @@ JRootie 不试图规避这一点，也无法规避。**涉及 `static final` 修
 
 方法体被替换后，原方法的局部变量**从未被分配**——不是“访问不到”，是“不存在”。这是任何 redefine 方案（Byte Buddy、Mockito inline、手写 ASM）的共同限制。
 
-`Context` 提供 `receiver` 与 `args`，`ContextOps` 提供 `receiver` 的字段读写。原方法的局部变量不在其中。
+`Context` 提供 `owner` / `receiver` / `args`，`ContextOps` 提供 `receiver` 与 `owner` 的字段读写。原方法的局部变量不在其中。
 
 ---
 
@@ -540,9 +554,9 @@ mvn clean package
 
 产物：
 
-- `target/jrootie-0.3.1.jar`：主 JAR，同时是 agent JAR
-- `target/jrootie-0.3.1-sources.jar`
-- `target/jrootie-0.3.1-javadoc.jar`
+- `target/jrootie-0.3.2.jar`：主 JAR，同时是 agent JAR
+- `target/jrootie-0.3.2-sources.jar`
+- `target/jrootie-0.3.2-javadoc.jar`
 
 `META-INF/versions/17/` 下是 JDK 17+ 专用实现（`UnsafeProvider` + `JdkInternalUnsafe`，使用 `getReference` / `putReference`）。
 

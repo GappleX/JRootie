@@ -15,31 +15,59 @@
  */
 package io.github.gapplex.jrootie.redefine;
 
+import java.util.Objects;
+
 /**
  * 替换函数观察到的调用上下文。
  *
- * <p>仅暴露接收者与参数数组。线程、调用栈、时间等信息由调用方自行采集，
- * 本类不做隐式捕获。</p>
+ * <p>暴露被 redefine 的方法所属的类、接收者、参数数组。线程、调用栈、
+ * 时间等信息由调用方自行采集，本类不做隐式捕获。</p>
  *
- * <p>实例由 {@link MethodRegistry#invoke(int, Object, Object[])} 在每次
- * 桥接调用时创建，不可变；{@link #args()} 返回的数组由 JVM 侧装箱产生，
- * 调用方不应假设其长度或元素类型之外的性质。</p>
+ * <p>实例由 {@link MethodRegistry#invoke(int, Class, Object, Object[])}
+ * 在每次桥接调用时创建，不可变。</p>
  *
  * @since 0.2.0
  */
 public final class Context {
 
+    private final Class<?> owner;
     private final Object receiver;
     private final Object[] args;
 
-    Context(Object receiver, Object[] args) {
+    Context(Class<?> owner, Object receiver, Object[] args) {
+        this.owner = Objects.requireNonNull(owner, "owner");
         this.receiver = receiver;
         this.args = args;
+    }
+
+    /**
+     * 返回被 redefine 的方法所属的类。
+     *
+     * <p>这是方法定义所在的类——即使 {@code receiver} 是子类实例，
+     * 也返回方法声明所在的父类。静态方法有相同的返回。</p>
+     *
+     * <p>用途：</p>
+     * <ul>
+     *   <li>{@code ContextOps} 用它定位静态字段与静态方法的 owner 类</li>
+     *   <li>诊断：{@code ctx.owner().getName()} 告诉你正在替换谁的方法</li>
+     *   <li>接口 static 方法：{@code receiver.getClass()} 走不到接口，
+     *       {@code owner()} 是唯一入口</li>
+     * </ul>
+     *
+     * @return 方法所属的类
+     */
+    public Class<?> owner() {
+        return owner;
     }
 
     /** @return 接收者对象；静态方法为 {@code null} */
     public Object receiver() {
         return receiver;
+    }
+
+    /** @return 是否为静态方法调用——等价于 {@code receiver() == null} */
+    public boolean isStatic() {
+        return receiver == null;
     }
 
     /** @return 参数数组；非 {@code null}，可能长度为 0 */
@@ -67,7 +95,8 @@ public final class Context {
 
     @Override
     public String toString() {
-        return "Context{receiver="
+        return "Context{owner=" + owner.getName()
+                + ", receiver="
                 + (receiver == null ? "null" : receiver.getClass().getName())
                 + ", argCount=" + args.length + '}';
     }

@@ -453,10 +453,13 @@ public class RootDoRedefine {
      */
     private void emitBridge(MethodVisitor mv, Method method, int id) {
         boolean isStatic = Modifier.isStatic(method.getModifiers());
+        Class<?> owner = method.getDeclaringClass();
         Class<?>[] params = method.getParameterTypes();
         Class<?> returnType = method.getReturnType();
 
         mv.visitLdcInsn(Integer.valueOf(id));
+
+        mv.visitLdcInsn(Type.getType(owner));
 
         if (isStatic) {
             mv.visitInsn(Opcodes.ACONST_NULL);
@@ -479,7 +482,7 @@ public class RootDoRedefine {
         mv.visitMethodInsn(Opcodes.INVOKESTATIC,
                 "io/github/gapplex/jrootie/redefine/MethodRegistry",
                 "invoke",
-                "(ILjava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
+                "(ILjava/lang/Class;Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
                 false);
 
         emitReturnFromObject(mv, returnType);

@@ -60,18 +60,20 @@ public final class MethodRegistry {
      * 桥接字节码的调用入口。
      *
      * @param id       替换函数 id
+     * @param owner    被 redefine 的方法所属的类
      * @param receiver 接收者；静态方法为 {@code null}
      * @param args     参数数组
      * @return 替换函数的返回值
      * @throws Throwable 替换函数自身抛出的异常，原样透传
      */
-    public static Object invoke(int id, Object receiver, Object[] args) throws Throwable {
+    public static Object invoke(int id, Class<?> owner, Object receiver, Object[] args)
+            throws Throwable {
         Function<Context, Object> fn = FUNCTIONS.get(Integer.valueOf(id));
         if (fn == null) {
             throw new IllegalStateException(
                     "No replacement registered for id " + id);
         }
-        return fn.apply(new Context(receiver, args));
+        return fn.apply(new Context(owner, receiver, args));
     }
 
     /**
