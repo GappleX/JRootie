@@ -13,7 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.gapplex.jrootie.operators;
+package io.github.gapplex.jrootie.internal.undo;
+
+import io.github.gapplex.jrootie.redefine.MethodRegistry;
 
 import java.util.Objects;
 
@@ -25,7 +27,7 @@ import java.util.Objects;
  *
  * @since 0.2.0
  */
-final class RedefineRecord implements UndoEntry {
+public final class RedefineRecord implements UndoEntry {
 
     private final Class<?> target;
     private final byte[] oldBytecode;
@@ -36,21 +38,21 @@ final class RedefineRecord implements UndoEntry {
      * @param oldBytecode redefine 之前的字节码（回滚用）
      * @param registryId  {@code replace} 分配的 id；专用字节码路径为 {@code null}
      */
-    RedefineRecord(Class<?> target, byte[] oldBytecode, Integer registryId) {
+    public RedefineRecord(Class<?> target, byte[] oldBytecode, Integer registryId) {
         this.target = Objects.requireNonNull(target, "target");
         this.oldBytecode = Objects.requireNonNull(oldBytecode, "oldBytecode");
         this.registryId = registryId;
     }
 
-    Class<?> target() {
+    public Class<?> target() {
         return target;
     }
 
-    byte[] oldBytecode() {
+    public byte[] oldBytecode() {
         return oldBytecode;
     }
 
-    Integer registryId() {
+    public Integer registryId() {
         return registryId;
     }
 }

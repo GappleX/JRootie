@@ -13,7 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.gapplex.jrootie.operators;
+package io.github.gapplex.jrootie.internal.undo;
+
+import io.github.gapplex.jrootie.operators.Rootie;
 
 /**
  * undo-log 条目。{@link Rootie#close()} 按 LIFO 逐条回放。
@@ -26,5 +28,5 @@ package io.github.gapplex.jrootie.operators;
  *
  * @since 0.2.0
  */
-interface UndoEntry {
+public interface UndoEntry {
 }

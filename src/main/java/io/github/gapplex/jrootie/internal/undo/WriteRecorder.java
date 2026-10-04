@@ -13,9 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.gapplex.jrootie.operators;
+package io.github.gapplex.jrootie.internal.undo;
 
 import io.github.gapplex.jrootie.exceptions.OperateFailedException;
+import io.github.gapplex.jrootie.operators.AcquireMode;
+import io.github.gapplex.jrootie.operators.RootDoField;
+import io.github.gapplex.jrootie.operators.Rootie;
 
 import java.lang.reflect.Field;
 

@@ -19,6 +19,9 @@ import io.github.gapplex.jrootie.Audit;
 import io.github.gapplex.jrootie.Log;
 import io.github.gapplex.jrootie.agent.InstrumentationHolder;
 import io.github.gapplex.jrootie.exceptions.OperateFailedException;
+import io.github.gapplex.jrootie.internal.undo.RedefineRecorder;
+import io.github.gapplex.jrootie.redefine.Context;
+import io.github.gapplex.jrootie.redefine.MethodRegistry;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
@@ -474,7 +477,7 @@ public class RootDoRedefine {
         }
 
         mv.visitMethodInsn(Opcodes.INVOKESTATIC,
-                "io/github/gapplex/jrootie/operators/MethodRegistry",
+                "io/github/gapplex/jrootie/redefine/MethodRegistry",
                 "invoke",
                 "(ILjava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;",
                 false);
@@ -717,7 +720,7 @@ public class RootDoRedefine {
     }
 
     /**
-     * 包级回滚入口。供 {@link Rootie#replayUndo()} 使用。
+     * 包级回滚入口。供 {@code Rootie.close()} 的回放路径使用。
      *
      * <p>与 {@link #restore(Class, byte[])} 的区别：不写审计日志。回滚由
      * {@code Rootie} 统一记录，此处重复记录会造成日志双写与 caller 误导。</p>

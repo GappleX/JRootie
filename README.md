@@ -3,8 +3,11 @@
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.gapplex/jrootie.svg)](https://central.sonatype.com/artifact/io.github.gapplex/jrootie)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-> **仅用于 JVM 内部研究、测试与安全教育。**  
-> 本项目假定短生命周期进程、测试级 classpath、进程级 `-javaagent` 参数。  
+> **尽我所能，现你所想。**
+> *All that I can, all that you will.*
+
+> **仅用于 JVM 内部研究、测试与安全教育。**
+> 本项目假定短生命周期进程、测试级 classpath、进程级 `-javaagent` 参数。
 > **不要放进生产 classpath。** 即使代码路径从不调用它，JVM 参数也可能泄漏到生产环境。
 
 ---
@@ -43,7 +46,7 @@ JRootie 是一个 JVM 内部访问工具包。它通过 `MethodHandles.Lookup.IM
 <dependency>
     <groupId>io.github.gapplex</groupId>
     <artifactId>jrootie</artifactId>
-    <version>0.3.0</version>
+    <version>0.3.1</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -92,7 +95,7 @@ public class Demo {
 启动命令：
 
 ```bash
-java -javaagent:/abs/path/to/jrootie-0.3.0.jar -jar yourapp.jar
+java -javaagent:/abs/path/to/jrootie-0.3.1.jar -jar yourapp.jar
 ```
 
 > 所有 JDK 版本都需要 `-javaagent`。JDK 11+ 均支持。
@@ -105,8 +108,8 @@ java -javaagent:/abs/path/to/jrootie-0.3.0.jar -jar yourapp.jar
 
 | JDK | 启动参数 | `jdk.internal.misc.Unsafe` 引用读写 |
 |---|---|---|
-| 11 – 16 | `-javaagent:.../jrootie-0.3.0.jar` | `getObject` / `putObject` |
-| 17+ | `-javaagent:.../jrootie-0.3.0.jar` | `getReference` / `putReference`（MR-JAR 版本选择） |
+| 11 – 16 | `-javaagent:.../jrootie-0.3.1.jar` | `getObject` / `putObject` |
+| 17+ | `-javaagent:.../jrootie-0.3.1.jar` | `getReference` / `putReference`（MR-JAR 版本选择） |
 
 **所有 JDK 版本都需要 agent。** 它提供：
 
@@ -209,6 +212,7 @@ redef.replace(Foo.class, "compute",
 ```java
 public final class Context {
     public Object receiver();       // 静态方法返回 null
+    public boolean isStatic();      // == (receiver() == null)
     public Object[] args();
     public int argCount();
     public <T> T arg(int index);    // 按索引取参数
@@ -216,6 +220,36 @@ public final class Context {
 ```
 
 桥接字节码自动装箱参数、调用 `MethodRegistry`、拆箱返回值。装箱与拆箱对称——`boolean` 走 `Boolean.booleanValue()`，不走 `Integer.intValue()`。
+
+### 便捷操作：`ContextOps`
+
+在 lambda 里频繁读写 `receiver` 的字段、调用 `receiver` 的方法时，每次都传 `ctx.receiver()` 冗余。`ContextOps` 把 `receiver` 绑定为默认目标：
+
+```java
+try (Rootie r = Rootie.acquireTest()) {
+    r.rtdoRedefine().replace(Target.class, "update",
+            new Class<?>[]{int.class},
+            ctx -> {
+                ContextOps ops = new ContextOps(ctx, r);
+
+                Object[] table = ops.field("table", Object[].class);
+                table[ctx.arg(0)] = "hacked";
+                ops.setField("cache", null);
+                ops.invoke("notifyChanged", new Class<?>[0]);
+                return null;
+            });
+}
+```
+
+| 方法 | 等价于 |
+|---|---|
+| `ops.field(name, type)` | `r.rtdoField().getFieldValue(ctx.receiver(), name, type)` |
+| `ops.setField(name, value)` | `r.rtdoField().setFieldValue(ctx.receiver(), name, value)` |
+| `ops.invoke(name, paramTypes, args)` | `r.rtdoMethod().invoke(ctx.receiver(), name, paramTypes, args)` |
+
+`ContextOps` 只作用于 `receiver` 自身。操作其他对象时，直接用 `r.rtdoField()` / `r.rtdoMethod()`。
+
+**`ctx.invoke` 的异常语义**：方法自身抛出的异常被 `RootDoMethod.invoke` 包装为 `OperateFailedException`，原始异常在 `getCause()`。这与原方法直接调用的行为不同——需要原始类型时，用 `Unsafe.throwException` 或直接调 `RootDoMethod`。
 
 ### 类加载器可见性
 
@@ -316,7 +350,7 @@ Object[] arr = r.rtdoField().getFieldValue(obj, "arr", Object[].class);
 arr[0] = "x";          // ← 不被追踪
 ```
 
-**核心限制：引用不是快照。**  
+**核心限制：引用不是快照。**
 `oldValue` 记录的是引用或原始值，不是引用目标的内容。需要恢复内容时，由调用方在 scope 外自行快照。
 
 ---
@@ -414,11 +448,16 @@ try (Rootie r = Rootie.acquireTest()) {
 |---|---|
 | 提权（`acquire`） | `INFO` |
 | 字段写入 `final` / 敏感字段 | `WARN` |
+| 回滚跳过（`TEST_KEEP` 冲突） | `WARN` |
 | 普通字段写入 | `DEBUG` |
+| 字段 / redefine 回滚 | `DEBUG` |
 | 方法体 redefine | `INFO` |
+| scope 关闭汇总 | `INFO` |
 | 字段读取 | `TRACE` |
 | 方法调用 / 构造 | `DEBUG` |
 | 操作失败 | `ERROR`（只记异常类名，不记 message） |
+
+**日志故障隔离**：底层 SLF4J provider 抛出的任何异常都被 `Audit` 吞掉。审计是观测手段，不是业务逻辑——日志故障不会中断写入、回滚或 `close`。首次故障向 `System.err` 报告一次，之后静默。
 
 需要在测试里看到日志，加入 provider：
 
@@ -472,6 +511,12 @@ JRootie 不试图规避这一点，也无法规避。**涉及 `static final` 修
 
 `replace` 替换了方法体，但用户 lambda 内的副作用（IO、状态修改、外部调用）不在 undo-log 覆盖范围。
 
+### 局部变量不可访问
+
+方法体被替换后，原方法的局部变量**从未被分配**——不是“访问不到”，是“不存在”。这是任何 redefine 方案（Byte Buddy、Mockito inline、手写 ASM）的共同限制。
+
+`Context` 提供 `receiver` 与 `args`，`ContextOps` 提供 `receiver` 的字段读写。原方法的局部变量不在其中。
+
 ---
 
 ## 已知不受支持
@@ -487,7 +532,7 @@ JRootie 不试图规避这一点，也无法规避。**涉及 `static final` 修
 
 ## 构建
 
-要求 JDK 25+（MR-JAR 的 25 分支需要 `--release 25`）。
+要求 JDK 17+（MR-JAR 的 17 分支需要 `--release 17`）。
 
 ```bash
 mvn clean package
@@ -495,11 +540,19 @@ mvn clean package
 
 产物：
 
-- `target/jrootie-0.3.0.jar`：主 JAR，同时是 agent JAR
-- `target/jrootie-0.3.0-sources.jar`
-- `target/jrootie-0.3.0-javadoc.jar`
+- `target/jrootie-0.3.1.jar`：主 JAR，同时是 agent JAR
+- `target/jrootie-0.3.1-sources.jar`
+- `target/jrootie-0.3.1-javadoc.jar`
 
-`META-INF/versions/25/` 下是 JDK 25 专用实现（`UnsafeProvider` + `JdkInternalUnsafe`）。
+`META-INF/versions/17/` 下是 JDK 17+ 专用实现（`UnsafeProvider` + `JdkInternalUnsafe`，使用 `getReference` / `putReference`）。
+
+---
+
+## 测试
+
+技术兼容性测试套件（TCK）在独立仓库：[GappleX/JRootie-TCK](https://github.com/GappleX/JRootie-TCK)。
+
+覆盖字段读写、方法调用、构造实例、redefine（应用类 + JDK 内部类）、undo 回滚。通过 Maven Toolchains 在 JDK 11 / 17 / 21 / 25 上验证。
 
 ---
 

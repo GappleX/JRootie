@@ -19,6 +19,7 @@ import io.github.gapplex.jrootie.Audit;
 import io.github.gapplex.jrootie.Log;
 import io.github.gapplex.jrootie.exceptions.OperateFailedException;
 import io.github.gapplex.jrootie.PrimitiveUtils;
+import io.github.gapplex.jrootie.internal.undo.WriteRecorder;
 import io.github.gapplex.jrootie.unsafe.IUnsafe;
 
 import java.lang.invoke.MethodHandle;

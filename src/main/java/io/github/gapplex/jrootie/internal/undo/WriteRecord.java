@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.gapplex.jrootie.operators;
+package io.github.gapplex.jrootie.internal.undo;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -33,7 +33,7 @@ import java.util.Objects;
  *
  * @since 0.1.0
  */
-public final class WriteRecord implements UndoEntry{
+public final class WriteRecord implements UndoEntry {
 
     private final Object target;
     private final Field field;

@@ -19,6 +19,7 @@ import org.slf4j.Logger;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 结构化审计日志器。
@@ -26,6 +27,11 @@ import java.lang.reflect.Modifier;
  * <p><b>设计约束：</b>所有公开方法只接受“结构信息”——类名、字段名、
  * 动作名、调用点，不接受任何“值信息”（字段值、对象内容、hashCode）。
  * 需要记录值时，由调用方在应用层显式承担泄漏后果。</p>
+ *
+ * <p><b>故障隔离：</b>审计日志是观测手段，不是业务逻辑。底层 SLF4J
+ * provider 抛出的任何异常都会被本类吞掉，以保证写入、回滚、close 等
+ * 关键路径不因日志故障中断。首次故障向 {@code System.err} 报告一次，
+ * 之后静默以避免刷屏。</p>
  *
  * <p>审计分级：</p>
  * <ul>
@@ -38,6 +44,11 @@ import java.lang.reflect.Modifier;
  * @since 0.1.0
  */
 public final class Audit {
+
+    /**
+     * 已报告日志故障标记。首次故障打印堆栈，后续静默。
+     */
+    private static final AtomicBoolean LOG_FAILURE_REPORTED = new AtomicBoolean();
 
     /** 底层 SLF4J logger。 */
     private final Logger logger;
@@ -58,7 +69,7 @@ public final class Audit {
      *             {@code "before-security-manager"}
      */
     public void acquired(String mode) {
-        logger.info("acquire mode={} caller={}", mode, caller());
+        safe(() -> logger.info("acquire mode={} caller={}", mode, caller()));
     }
 
     /**
@@ -68,10 +79,12 @@ public final class Audit {
      * @param name  字段名
      */
     public void fieldRead(Class<?> owner, String name) {
-        if (logger.isTraceEnabled()) {
-            logger.trace("read {}.{} [{}] caller={}",
-                    owner.getName(), name, flags(owner, name), caller());
-        }
+        safe(() -> {
+            if (logger.isTraceEnabled()) {
+                logger.trace("read {}.{} [{}] caller={}",
+                        owner.getName(), name, flags(owner, name), caller());
+            }
+        });
     }
 
     /**
@@ -82,13 +95,15 @@ public final class Audit {
      * @param level 危险级别，见 {@link Level}
      */
     public void fieldWrite(Class<?> owner, String name, int level) {
-        if (level >= Level.FINAL) {
-            logger.warn("write {}.{} [{}] caller={}",
-                    owner.getName(), name, flags(owner, name), caller());
-        } else if (logger.isDebugEnabled()) {
-            logger.debug("write {}.{} caller={}",
-                    owner.getName(), name, caller());
-        }
+        safe(() -> {
+            if (level >= Level.FINAL) {
+                logger.warn("write {}.{} [{}] caller={}",
+                        owner.getName(), name, flags(owner, name), caller());
+            } else if (logger.isDebugEnabled()) {
+                logger.debug("write {}.{} caller={}",
+                        owner.getName(), name, caller());
+            }
+        });
     }
 
     /**
@@ -98,10 +113,12 @@ public final class Audit {
      * @param name  方法名
      */
     public void methodInvoke(Class<?> owner, String name) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("invoke {}.{} caller={}",
-                    owner.getName(), name, caller());
-        }
+        safe(() -> {
+            if (logger.isDebugEnabled()) {
+                logger.debug("invoke {}.{} caller={}",
+                        owner.getName(), name, caller());
+            }
+        });
     }
 
     /**
@@ -110,9 +127,11 @@ public final class Audit {
      * @param target 目标类
      */
     public void constructorNew(Class<?> target) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("construct {} caller={}", target.getName(), caller());
-        }
+        safe(() -> {
+            if (logger.isDebugEnabled()) {
+                logger.debug("construct {} caller={}", target.getName(), caller());
+            }
+        });
     }
 
     /**
@@ -123,9 +142,11 @@ public final class Audit {
      * @param level 危险级别，见 {@link Level#of(Field)}
      */
     public void fieldRollback(Class<?> owner, String name, int level) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("rollback {}.{}", owner.getName(), name);
-        }
+        safe(() -> {
+            if (logger.isDebugEnabled()) {
+                logger.debug("rollback {}.{}", owner.getName(), name);
+            }
+        });
     }
 
     /**
@@ -136,8 +157,8 @@ public final class Audit {
      * @param level 危险级别，见 {@link Level#of(Field)}
      */
     public void fieldRollbackSkipped(Class<?> owner, String name, int level) {
-        logger.warn("rollback SKIPPED {}.{} [{}] caller={}",
-                owner.getName(), name, flags(owner, name), caller());
+        safe(() -> logger.warn("rollback SKIPPED {}.{} [{}] caller={}",
+                owner.getName(), name, flags(owner, name), caller()));
     }
 
     /**
@@ -148,8 +169,9 @@ public final class Audit {
      * @param conflicts   冲突条目数（含回滚失败）
      */
     public void scopeClosed(String mode, int rolledBack, int conflicts) {
-        logger.info("scope closed mode={} rolledBack={} conflicts={} caller={}",
-                mode, rolledBack, conflicts, caller());
+        safe(() -> logger.info(
+                "scope closed mode={} rolledBack={} conflicts={} caller={}",
+                mode, rolledBack, conflicts, caller()));
     }
 
     /**
@@ -164,8 +186,8 @@ public final class Audit {
      * @param kind  动作类型标识
      */
     public void methodRedefine(Class<?> owner, String name, String kind) {
-        logger.info("redefine {}.{} ({}) caller={}",
-                owner.getName(), name, kind, caller());
+        safe(() -> logger.info("redefine {}.{} ({}) caller={}",
+                owner.getName(), name, kind, caller()));
     }
 
     /**
@@ -174,9 +196,11 @@ public final class Audit {
      * @param target 被恢复的类
      */
     public void redefineRollback(Class<?> target) {
-        if (logger.isDebugEnabled()) {
-            logger.debug("rollback redefine {}", target.getName());
-        }
+        safe(() -> {
+            if (logger.isDebugEnabled()) {
+                logger.debug("rollback redefine {}", target.getName());
+            }
+        });
     }
 
     /**
@@ -191,9 +215,48 @@ public final class Audit {
      * @param t      原始异常
      */
     public void failed(String action, Class<?> owner, String name, Throwable t) {
-        logger.error("{} {}.{} failed: {} caller={}",
-                action, owner.getName(), name, t.getClass().getName(), caller());
+        safe(() -> logger.error("{} {}.{} failed: {} caller={}",
+                action, owner.getName(), name, t.getClass().getName(), caller()));
     }
+
+    /**
+     * 执行一次日志动作，吞掉底层 provider 抛出的任何异常。
+     *
+     * <p>日志系统故障（自定义 appender 抛异常、编码失败、IO 故障、
+     * {@code isEnabled} 探测失败等）不应中断写入、回滚或 {@code close}。
+     * 首次故障向 {@code System.err} 报告一次，之后静默。</p>
+     *
+     * <p><b>覆盖范围包括</b>：{@code isDebugEnabled} / {@code isTraceEnabled}
+     * 探测、{@code caller()} 的 {@link StackWalker} 调用、{@code flags()}
+     * 的反射调用、以及实际的 logger 输出。任何一环抛异常都被吞掉。</p>
+     *
+     * @param action 日志动作
+     */
+    private void safe(Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable t) {
+            reportLogFailure(t);
+        }
+    }
+
+    /**
+     * 报告一次日志故障。首次调用打印堆栈，后续调用静默。
+     *
+     * <p>{@code System.err} 本身抛异常时，本方法会向上传播——这种情况
+     * 通常意味着 JVM 已经不可用，任何策略都无法处理。</p>
+     */
+    private static void reportLogFailure(Throwable t) {
+        if (LOG_FAILURE_REPORTED.compareAndSet(false, true)) {
+            try {
+                System.err.println("[jrootie] Audit log failure (suppressed; "
+                        + "further failures will be silent): " + t);
+                t.printStackTrace(System.err);
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    // ===== 内部：结构信息组装 =====
 
     /**
      * 尝试组合字段修饰符标记，用于审计日志。
@@ -236,7 +299,9 @@ public final class Audit {
     /**
      * 获取调用点描述，格式为 {@code Class.method:line}。
      *
-     * <p>使用 {@link StackWalker} 避免构造完整栈帧，性能可控。</p>
+     * <p>使用 {@link StackWalker} 避免构造完整栈帧，性能可控。
+     * 过滤掉所有 {@code io.github.gapplex.jrootie.*} 内部帧，
+     * 使 caller 指向真正触发操作的用户代码。</p>
      *
      * @return 调用点描述；无法获取时返回 {@code "unknown"}
      */

@@ -46,14 +46,13 @@ import java.util.jar.JarOutputStream;
  * @since 0.1.0
  */
 public final class Agent {
-
     private static final String[] BOOTSTRAP_CLASSES = {
-            "io/github/gapplex/jrootie/operators/MethodRegistry.class",
-            "io/github/gapplex/jrootie/operators/Context.class",
+            "io/github/gapplex/jrootie/redefine/MethodRegistry.class",
+            "io/github/gapplex/jrootie/redefine/Context.class",
     };
 
     private static final String REGISTRY_NAME =
-            "io.github.gapplex.jrootie.operators.MethodRegistry";
+            "io.github.gapplex.jrootie.redefine.MethodRegistry";
 
     private Agent() {}
 

@@ -15,7 +15,7 @@
  */
 package io.github.gapplex.jrootie.exceptions;
 
-import io.github.gapplex.jrootie.operators.WriteRecord;
+import io.github.gapplex.jrootie.internal.undo.WriteRecord;
 
 import java.util.ArrayList;
 import java.util.Collections;

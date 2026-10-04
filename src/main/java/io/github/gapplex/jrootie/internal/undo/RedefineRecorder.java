@@ -13,7 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.gapplex.jrootie.operators;
+package io.github.gapplex.jrootie.internal.undo;
+
+import io.github.gapplex.jrootie.operators.RootDoRedefine;
+import io.github.gapplex.jrootie.operators.Rootie;
 
 /**
  * redefine 成功后的回调，用于将操作记入 undo-log。

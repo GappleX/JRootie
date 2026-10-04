@@ -21,6 +21,8 @@ import io.github.gapplex.jrootie.Audit;
 import io.github.gapplex.jrootie.Log;
 import io.github.gapplex.jrootie.exceptions.OperateFailedException;
 import io.github.gapplex.jrootie.exceptions.ScopeCloseException;
+import io.github.gapplex.jrootie.internal.undo.*;
+import io.github.gapplex.jrootie.redefine.MethodRegistry;
 import io.github.gapplex.jrootie.unsafe.IUnsafe;
 import io.github.gapplex.jrootie.unsafe.UnsafeProvider;
 
