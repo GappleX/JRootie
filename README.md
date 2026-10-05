@@ -24,9 +24,9 @@ JRootie 是一个 JVM 内部访问工具包。它通过 `MethodHandles.Lookup.IM
 |---|---|---|
 | 字段读写 | `rtdoField()` | 实例 / 静态，含 `final` |
 | 方法调用 | `rtdoMethod()` | 实例 / 静态，含 `private` |
-| 构造实例 | `rtdoConstructor()` | 含 `private` 构造器；`allocate()` 无构造分配 |
+| 创建实例 | `rtdoConstructor()` | 含 `private` 构造器；`allocate()` 无构造分配 |
 | 类枚举 | `rtdoClass()` | 声明类（含 `private` 成员类） |
-| 方法体重定义 | `rtdoRedefine()` | 应用类 + JDK 内部类 |
+| 方法体重定义 | `rtdoRedefine()` | 应用类 + JDK 内部类；单方法或链式批量 |
 
 **它不做什么：**
 
@@ -46,7 +46,7 @@ JRootie 是一个 JVM 内部访问工具包。它通过 `MethodHandles.Lookup.IM
 <dependency>
     <groupId>io.github.gapplex</groupId>
     <artifactId>jrootie</artifactId>
-    <version>0.3.2</version>
+    <version>0.4.0</version>
     <scope>test</scope>
 </dependency>
 ```
@@ -95,7 +95,7 @@ public class Demo {
 启动命令：
 
 ```bash
-java -javaagent:/abs/path/to/jrootie-0.3.2.jar -jar yourapp.jar
+java -javaagent:/abs/path/to/jrootie-0.4.0.jar -jar yourapp.jar
 ```
 
 > 所有 JDK 版本都需要 `-javaagent`。JDK 11+ 均支持。
@@ -108,8 +108,8 @@ java -javaagent:/abs/path/to/jrootie-0.3.2.jar -jar yourapp.jar
 
 | JDK | 启动参数 | `jdk.internal.misc.Unsafe` 引用读写 |
 |---|---|---|
-| 11 – 16 | `-javaagent:.../jrootie-0.3.2.jar` | `getObject` / `putObject` |
-| 17+ | `-javaagent:.../jrootie-0.3.2.jar` | `getReference` / `putReference`（MR-JAR 版本选择） |
+| 11 – 16 | `-javaagent:.../jrootie-0.4.0.jar` | `getObject` / `putObject` |
+| 17+ | `-javaagent:.../jrootie-0.4.0.jar` | `getReference` / `putReference`（MR-JAR 版本选择） |
 
 **所有 JDK 版本都需要 agent。** 它提供：
 
@@ -154,16 +154,17 @@ Object staticResult = r.rtdoMethod().invokeStatic(
 
 参数匹配规则同字段：基本类型包装后按 `==` 比较，不做协变匹配。
 
-### `rtdoConstructor()` —— 构造实例
+### `rtdoConstructor()` —— 创建实例
 
 ```java
+// 通过匹配参数类型调用构造器（包括 private 构造器）
 Foo foo = r.rtdoConstructor().newInstance(
         Foo.class,
         new Class<?>[]{String.class, String.class},
         "John", "Black");
 
-// 无构造器分配（字段保持 JVM 默认值）
-Foo empty = r.rtdoClass().allocate(Foo.class);
+// 不调用构造器，字段保持 JVM 默认值
+Foo empty = r.rtdoConstructor().allocate(Foo.class);
 ```
 
 ### `rtdoClass()` —— 类枚举
@@ -184,7 +185,7 @@ Class<?>[] inner = r.rtdoClass().getDeclaredClasses(Owner.class);
 
 **所有 redefine 接口都要求显式传入 `paramTypes`**，与 `Class.getDeclaredMethod(String, Class[])` 语义一致。无参方法传 `new Class<?>[0]`。
 
-### 四个接口
+### 单方法形式
 
 ```java
 RootDoRedefine redef = r.rtdoRedefine();
@@ -207,6 +208,31 @@ redef.replace(Foo.class, "compute",
         });
 ```
 
+每个调用立即提交，触发一次 `redefineClasses`。
+
+### 链式形式
+
+同一个类的多个方法需要一次性重定义时，用 `on(Class)` 打开会话：
+
+```java
+try (Rootie r = Rootie.acquireTest()) {
+    r.rtdoRedefine()
+            .on(Foo.class)
+            .makeReturn("compute", new Class<?>[0], 42)
+            .replace("greet", new Class<?>[0], ctx -> "hacked")
+            .makeNoOp("log", new Class<?>[]{String.class})
+            .apply();
+}
+```
+
+**三项好处：**
+
+- **一次 deopt** —— 所有方法在一次 `redefineClasses` 调用中生效，而非每个方法触发一次。
+- **原子性** —— JVM 保证所有方法同时生效，不存在「一部分改了、一部分没改」的中间窗口。
+- **一条 undo 记录** —— `close()` 时一次性恢复旧字节码，批量注销替换函数。
+
+**生命周期：** 一个 session 只能 `apply()` 或 `cancel()` 一次。丢弃未提交的 session 会导致 `MethodRegistry` 中的替换函数泄漏。`cancel()` 注销所有已注册的替换函数，不提交字节码。
+
 ### `replace` 的 `Context`
 
 ```java
@@ -226,7 +252,7 @@ public final class Context {
 
 ### 便捷操作：`ContextOps`
 
-在 lambda 里频繁读写 `receiver` 的字段、调用 `receiver` 的方法，或对 `ctx.owner()`（被 redefine 的方法所属类）操作静态成员时，每次都显式传目标冗余。`ContextOps` 把两个目标绑定为默认：
+在 lambda 里频繁读写 `receiver` 的字段、调用 `receiver` 的方法，或对 `ctx.owner()` 操作静态成员时，每次都显式传目标冗余。`ContextOps` 把两个目标绑定为默认：
 
 ```java
 try (Rootie r = Rootie.acquireTest()) {
@@ -299,6 +325,32 @@ redef.restore(Foo.class, original);
 
 ---
 
+## close 之后
+
+`close()` 会关闭 scope 的共享状态。之后：
+
+- 所有操作器的**公开方法**（含 `Session` 的方法）抛 `OperateFailedException`
+- **内部回滚路径不受影响**——回滚本身发生在 close 过程中，走包级方法绕过检查
+
+若 `close()` 后仍需操作，acquire 新的 `Rootie`：
+
+```java
+Rootie r = Rootie.acquireTest();
+// ... 使用
+r.close();
+
+// 以下全部抛 OperateFailedException
+r.rtdoField().setFieldValue(obj, "x", 1);
+r.rtdoRedefine().on(Foo.class);
+
+// 正确做法：acquire 新的
+try (Rootie r2 = Rootie.acquireTest()) { /* ... */ }
+```
+
+`NORMAL` 模式下 `close()` 是 no-op，scope 状态永不关闭——所有检查自动通过。
+
+---
+
 ## 自动恢复
 
 `TEST` / `TEST_KEEP` 模式下，undo-log 覆盖两类操作：
@@ -309,7 +361,7 @@ redef.restore(Foo.class, original);
 
 ### 方法体重定义
 
-用 redefine 之前的字节码覆盖。同时注销 `replace` 注册的替换函数。
+用 redefine 之前的字节码覆盖。同时注销 `replace` 注册的所有替换函数（链式会话中可能有多个）。
 
 ### 回放顺序
 
@@ -554,11 +606,11 @@ mvn clean package
 
 产物：
 
-- `target/jrootie-0.3.2.jar`：主 JAR，同时是 agent JAR
-- `target/jrootie-0.3.2-sources.jar`
-- `target/jrootie-0.3.2-javadoc.jar`
+- `target/jrootie-0.4.0.jar`：主 JAR，同时是 agent JAR
+- `target/jrootie-0.4.0-sources.jar`
+- `target/jrootie-0.4.0-javadoc.jar`
 
-`META-INF/versions/17/` 下是 JDK 17+ 专用实现（`UnsafeProvider` + `JdkInternalUnsafe`，使用 `getReference` / `putReference`）。
+`META-INF/versions/17/` 下是 JDK 17+ 专用实现（`JdkInternalUnsafe`，使用 `getReference` / `putReference`）。
 
 ---
 
@@ -566,7 +618,7 @@ mvn clean package
 
 技术兼容性测试套件（TCK）在独立仓库：[GappleX/JRootie-TCK](https://github.com/GappleX/JRootie-TCK)。
 
-覆盖字段读写、方法调用、构造实例、redefine（应用类 + JDK 内部类）、undo 回滚。通过 Maven Toolchains 在 JDK 11 / 17 / 21 / 25 上验证。
+覆盖字段读写、方法调用、实例创建、redefine（应用类 + JDK 内部类 + 链式）、undo 回滚。通过 Maven Toolchains 在 JDK 11 / 17 / 21 / 25 上验证。
 
 ---
 
