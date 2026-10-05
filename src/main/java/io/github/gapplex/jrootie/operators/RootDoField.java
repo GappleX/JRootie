@@ -51,7 +51,9 @@ import java.util.Objects;
  * 之前会先回调该 recorder。<b>内部回放路径</b>（{@link #writeRaw}）不经
  * recorder，避免回滚操作污染 undo-log。</p>
  *
- * <p>本类实例由 {@link Rootie#rtdoField()} 创建并持有。</p>
+ * <p>本类实例由 {@link Rootie#rtdoField()} 创建并持有。
+ * {@link Rootie#close()} 后所有公开方法抛 {@link OperateFailedException}；
+ * 内部回滚路径（{@link #readRaw} / {@link #writeRaw}）不受影响。</p>
  *
  * @see Rootie
  * @see WriteRecorder
@@ -75,6 +77,9 @@ public class RootDoField {
      * 写入前回调；{@code null} 表示不记录 undo（{@link AcquireMode#NORMAL}）。
      */
     private final WriteRecorder recorder;
+
+    /** scope 共享状态，{@link Rootie#close()} 后置为已关闭。 */
+    private final ScopeState state;
 
     /**
      * 字段缓存的 {@link ClassValue}。以类为键，值为“字段名 → Field”的映射。
@@ -102,13 +107,15 @@ public class RootDoField {
      * @param lookup   IMPL_LOOKUP
      * @param fields   {@code getDeclaredFields0} 的 MethodHandle
      * @param recorder 写入前回调，{@code null} 表示不记录 undo
+     * @param state    scope 共享状态
      */
     RootDoField(IUnsafe unsafe, MethodHandles.Lookup lookup,
-                MethodHandle fields, WriteRecorder recorder) {
+                MethodHandle fields, WriteRecorder recorder, ScopeState state) {
         UNSAFE = unsafe;
         IMPL_LOOKUP = lookup;
         GET_DECLARED_FIELDS_0 = fields;
         this.recorder = recorder;
+        this.state = state;
     }
 
     /**
@@ -162,11 +169,12 @@ public class RootDoField {
      * @param type      期望的类型（用于可读性校验），不可为 {@code null}
      * @param <T>       期望的返回类型
      * @return 字段值
-     * @throws OperateFailedException 参数非法、字段不存在、类型不兼容、
-     *                                或底层读取失败时抛出
+     * @throws OperateFailedException scope 已关闭、参数非法、字段不存在、
+     *                                类型不兼容、或底层读取失败时抛出
      */
     @SuppressWarnings("unchecked")
     public <T> T getFieldValue(Object instance, String fieldName, Class<? extends T> type) {
+        state.checkOpen();
         if (instance == null) throw new OperateFailedException("instance must not be null");
         if (fieldName == null) throw new OperateFailedException("fieldName must not be null");
         if (type == null) throw new OperateFailedException("type must not be null");
@@ -198,10 +206,11 @@ public class RootDoField {
      * @param instance  目标实例，不可为 {@code null}
      * @param fieldName 字段名，不可为 {@code null}
      * @param value     要写入的值；可为 {@code null}（非基本类型字段）
-     * @throws OperateFailedException 参数非法、字段不存在、类型不兼容、
-     *                                或底层写入失败时抛出
+     * @throws OperateFailedException scope 已关闭、参数非法、字段不存在、
+     *                                类型不兼容、或底层写入失败时抛出
      */
     public void setFieldValue(Object instance, String fieldName, Object value) {
+        state.checkOpen();
         if (instance == null) throw new OperateFailedException("instance must not be null");
         if (fieldName == null) throw new OperateFailedException("fieldName must not be null");
 
@@ -229,11 +238,12 @@ public class RootDoField {
      * @param type      期望类型，不可为 {@code null}
      * @param <T>       期望返回类型
      * @return 字段值
-     * @throws OperateFailedException 参数非法、字段不存在、非静态字段、
-     *                                类型不兼容或底层读取失败时抛出
+     * @throws OperateFailedException scope 已关闭、参数非法、字段不存在、
+     *                                非静态字段、类型不兼容或底层读取失败时抛出
      */
     @SuppressWarnings("unchecked")
     public <T> T getStaticFieldValue(Class<?> owner, String fieldName, Class<? extends T> type) {
+        state.checkOpen();
         if (owner == null) throw new OperateFailedException("owner must not be null");
         if (fieldName == null) throw new OperateFailedException("fieldName must not be null");
         if (type == null) throw new OperateFailedException("type must not be null");
@@ -261,10 +271,11 @@ public class RootDoField {
      * @param owner     字段所属类，不可为 {@code null}
      * @param fieldName 字段名，不可为 {@code null}
      * @param value     要写入的值；可为 {@code null}
-     * @throws OperateFailedException 参数非法、字段不存在、非静态字段、
-     *                                类型不兼容或底层写入失败时抛出
+     * @throws OperateFailedException scope 已关闭、参数非法、字段不存在、
+     *                                非静态字段、类型不兼容或底层写入失败时抛出
      */
     public void setStaticFieldValue(Class<?> owner, String fieldName, Object value) {
+        state.checkOpen();
         if (owner == null) throw new OperateFailedException("owner must not be null");
         if (fieldName == null) throw new OperateFailedException("fieldName must not be null");
 
@@ -287,7 +298,8 @@ public class RootDoField {
      * 无审计、无 recorder、无类型校验的读取。
      *
      * <p><b>仅供</b> {@link Rootie#close()} 回放 undo-log 使用。不触发
-     * {@link WriteRecorder}；不写审计日志。</p>
+     * {@link WriteRecorder}；不写审计日志；<b>不检查 scope 状态</b>
+     * ——回滚发生在 scope 已关闭之后。</p>
      *
      * @param target 目标实例；静态字段为 {@code null}
      * @param field  字段
@@ -304,7 +316,8 @@ public class RootDoField {
      *
      * <p><b>仅供</b> {@link Rootie#close()} 回放 undo-log 使用。不触发
      * {@link WriteRecorder}（否则回滚操作会把新条目压回 undo-log）；
-     * 不写审计日志。</p>
+     * 不写审计日志；<b>不检查 scope 状态</b>——回滚发生在 scope 已关闭
+     * 之后。</p>
      *
      * @param target 目标实例；静态字段为 {@code null}
      * @param field  字段

@@ -26,16 +26,22 @@ import java.lang.invoke.MethodHandles;
 import java.lang.reflect.Constructor;
 
 /**
- * 构造器级别的反射操作封装。
+ * 实例创建操作器。
  *
- * <p>通过 {@code MethodHandles.Lookup#IMPL_LOOKUP} 的
- * {@link MethodHandles.Lookup#unreflectConstructor(Constructor)} 直接调用
- * 任意可见性的构造器（包括 {@code private}），不经过
- * {@code setAccessible} 机制。</p>
+ * <p>提供两条创建路径：</p>
+ * <ul>
+ *   <li>{@link #newInstance} —— 通过匹配参数类型调用构造器创建实例，
+ *       包括 {@code private} 构造器。基于
+ *       {@link MethodHandles.Lookup#unreflectConstructor(Constructor)}，
+ *       不经过 {@code setAccessible} 机制。</li>
+ *   <li>{@link #allocate} —— 不调用任何构造器，直接分配实例，
+ *       字段保持 JVM 默认值。</li>
+ * </ul>
  *
- * <p>本类实例由 {@link Rootie#rtdoConstructor()} 创建并持有。</p>
+ * <p>本类实例由 {@link Rootie#rtdoConstructor()} 创建并持有。
+ * {@link Rootie#close()} 后所有公开方法抛 {@link OperateFailedException}。</p>
  *
- * <p><b>安全审计：</b>构造成功与失败都会记录到 {@link Audit}，
+ * <p><b>安全审计：</b>创建成功与失败都会记录到 {@link Audit}，
  * 不记录任何参数值。</p>
  *
  * @see Rootie
@@ -52,7 +58,7 @@ public class RootDoConstructor {
     /** 空参数数组常量，避免每次分配。 */
     private static final Object[] NO_ARGS = new Object[0];
 
-    /** 底层 Unsafe 抽象。 */
+    /** 底层 Unsafe 抽象，用于无构造器分配。 */
     private final IUnsafe UNSAFE;
 
     /** IMPL_LOOKUP。 */
@@ -60,6 +66,9 @@ public class RootDoConstructor {
 
     /** {@code Class#getDeclaredConstructors0(boolean)} 的句柄。 */
     private final MethodHandle GET_DECLARED_CONSTRUCTORS_0;
+
+    /** scope 共享状态，{@link Rootie#close()} 后置为已关闭。 */
+    private final ScopeState state;
 
     /**
      * 构造器缓存的 {@link ClassValue}。首次访问时获取类的全部声明构造器，
@@ -75,14 +84,17 @@ public class RootDoConstructor {
     /**
      * 包级构造器，仅供 {@link Rootie} 调用。
      *
-     * @param unsafe        Unsafe 抽象
-     * @param lookup        IMPL_LOOKUP
-     * @param constructors  {@code getDeclaredConstructors0} 的 MethodHandle
+     * @param unsafe       Unsafe 抽象
+     * @param lookup       IMPL_LOOKUP
+     * @param constructors {@code getDeclaredConstructors0} 的 MethodHandle
+     * @param state        scope 共享状态
      */
-    RootDoConstructor(IUnsafe unsafe, MethodHandles.Lookup lookup, MethodHandle constructors) {
+    RootDoConstructor(IUnsafe unsafe, MethodHandles.Lookup lookup,
+                      MethodHandle constructors, ScopeState state) {
         UNSAFE = unsafe;
         IMPL_LOOKUP = lookup;
         GET_DECLARED_CONSTRUCTORS_0 = constructors;
+        this.state = state;
     }
 
     /**
@@ -97,10 +109,12 @@ public class RootDoConstructor {
      * @param args       构造器实参，{@code null} 视为空数组
      * @param <T>        目标类型泛型
      * @return 已初始化的新实例
-     * @throws OperateFailedException 当类型为 {@code null}、找不到匹配构造器、
-     *                                构造器调用抛出异常或参数不合法时
+     * @throws OperateFailedException scope 已关闭、类型为 {@code null}、
+     *                                找不到匹配构造器、构造器调用抛出异常
+     *                                或参数不合法时
      */
     public <T> T newInstance(Class<T> type, Class<?>[] paramTypes, Object... args) {
+        state.checkOpen();
         if (type == null) throw new OperateFailedException("type must not be null");
 
         try {
@@ -115,6 +129,36 @@ public class RootDoConstructor {
             log.failed("new_instance", type, "<init>", t);
             throw new OperateFailedException(
                     "Construct '" + type.getName() + "' failed.", t);
+        }
+    }
+
+    /**
+     * 在<b>不调用构造器</b>的前提下分配一个实例。
+     *
+     * <p>等价于 {@code Unsafe#allocateInstance(Class)}，返回的对象其字段
+     * 保持 JVM 默认值（{@code 0}/{@code null}），跳过任何构造器逻辑
+     * （包括 {@code final} 字段赋值、父类构造、静态初始化块）。</p>
+     *
+     * @param type 目标类型，不可为 {@code null}
+     * @param <T>  目标类型泛型
+     * @return 已分配但未初始化的实例
+     * @throws OperateFailedException scope 已关闭、{@code type} 为
+     *                                {@code null}，或底层分配失败时
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T allocate(Class<T> type) {
+        state.checkOpen();
+        if (type == null) throw new OperateFailedException("type must not be null");
+        try {
+            T instance = (T) UNSAFE.allocateInstance(type);
+            log.constructorNew(type);
+            return instance;
+        } catch (OperateFailedException e) {
+            throw e;
+        } catch (Throwable t) {
+            log.failed("allocate", type, "<new>", t);
+            throw new OperateFailedException(
+                    "Allocate instance of '" + type.getName() + "' failed.", t);
         }
     }
 

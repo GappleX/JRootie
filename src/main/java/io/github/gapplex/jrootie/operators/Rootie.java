@@ -70,6 +70,12 @@ import java.util.List;
  * <p>不覆盖：构造器调用与方法调用的副作用、数组元素写入。scope 不扫描
  * 全局、不追踪外部修改、不恢复对象内容。</p>
  *
+ * <h2>close 后的行为</h2>
+ *
+ * <p>{@link #close()} 后，所有操作器的公开方法抛
+ * {@link OperateFailedException}——scope 已失效。若仍需操作，acquire 新的
+ * {@code Rootie}。内部回滚路径不受此约束（回滚本身发生在 close 过程中）。</p>
+ *
  * <h2>线程绑定</h2>
  *
  * <p>{@code TEST*} 模式下 {@code Rootie} 绑定创建线程。非持有线程调用
@@ -85,8 +91,10 @@ import java.util.List;
  * }  // close() 自动回滚
  * }</pre>
  *
- * <p><b>安全提示：</b>JDK 9–24 无需额外 JVM 参数；JDK 25+ 需要
- * {@code -javaagent:jrootie-0.2.0.jar} 以启用 JDK 内部类的 redefine 支持。</p>
+ * <p><b>安全提示：</b>所有 JDK 版本都需要
+ * {@code -javaagent:jrootie-0.4.0.jar}。agent 通过
+ * {@code Instrumentation#redefineModule} 在运行期开放所需模块，
+ * 无需 {@code --add-opens}。</p>
  *
  * @since 0.1.0
  * @see AcquireMode
@@ -139,6 +147,16 @@ public class Rootie implements AutoCloseable {
 
     /** close 幂等标记。 */
     private volatile boolean closed;
+
+    /**
+     * 提权 scope 的共享状态。所有操作器共享本实例；
+     * {@link #close()} 时关闭，之后所有操作器的公开方法抛
+     * {@link OperateFailedException}。
+     *
+     * <p>{@link AcquireMode#NORMAL} / {@link AcquireMode#BEFORE_SECURITY_MANAGER}
+     * 模式下 {@link #close()} 是 no-op，state 永不关闭——所有检查自动通过。</p>
+     */
+    private final ScopeState state = new ScopeState();
 
     // ===== Operators =====
 
@@ -306,7 +324,7 @@ public class Rootie implements AutoCloseable {
                 if (r == null) {
                     WriteRecorder rec = (undo == null) ? null : this::recordWrite;
                     r = fieldOps = new RootDoField(
-                            unsafe, implLookup, getDeclaredFields0, rec);
+                            unsafe, implLookup, getDeclaredFields0, rec, state);
                 }
             }
         }
@@ -325,7 +343,7 @@ public class Rootie implements AutoCloseable {
                 r = methodOps;
                 if (r == null) {
                     r = methodOps = new RootDoMethod(
-                            unsafe, implLookup, getDeclaredMethods0);
+                            unsafe, implLookup, getDeclaredMethods0, state);
                 }
             }
         }
@@ -344,7 +362,7 @@ public class Rootie implements AutoCloseable {
                 r = ctorOps;
                 if (r == null) {
                     r = ctorOps = new RootDoConstructor(
-                            unsafe, implLookup, getDeclaredConstructors0);
+                            unsafe, implLookup, getDeclaredConstructors0, state);
                 }
             }
         }
@@ -362,8 +380,7 @@ public class Rootie implements AutoCloseable {
             synchronized (this) {
                 r = classOps;
                 if (r == null) {
-                    r = classOps = new RootDoClass(
-                            unsafe, implLookup, getDeclaredClasses0);
+                    r = classOps = new RootDoClass(getDeclaredClasses0, state);
                 }
             }
         }
@@ -392,7 +409,7 @@ public class Rootie implements AutoCloseable {
                                 "rtdoRedefine requires -javaagent:jrootie.jar");
                     }
                     RedefineRecorder rec = (undo == null) ? null : this::recordRedefine;
-                    r = redefineOps = new RootDoRedefine(inst, owner, rec);
+                    r = redefineOps = new RootDoRedefine(inst, owner, rec, state);
                 }
             }
         }
@@ -407,18 +424,16 @@ public class Rootie implements AutoCloseable {
      * <p>回调时机在写入之前，{@code oldValue} 是<b>写入瞬间</b>读到的值，
      * 不是 scope 打开时缓存的——这是嵌套 scope 正确回滚的前提。</p>
      *
+     * <p>scope 关闭检查由 {@link RootDoField} 的公开写入方法承担，
+     * 此处不做重复检查。</p>
+     *
      * @param target   目标实例；静态字段为 {@code null}
      * @param field    字段
      * @param oldValue 写入前的旧值
      * @param newValue 即将写入的值
-     * @throws OperateFailedException 当前线程不是持有线程，或 scope 已关闭时
+     * @throws OperateFailedException 当前线程不是持有线程时
      */
     private void recordWrite(Object target, Field field, Object oldValue, Object newValue) {
-        if (closed) {
-            throw new OperateFailedException(
-                    "Rootie scope is closed; cannot write. "
-                            + "Open a new Rootie via Rootie.acquireTest().");
-        }
         Thread current = Thread.currentThread();
         if (current != owner) {
             throw new OperateFailedException(
@@ -439,21 +454,15 @@ public class Rootie implements AutoCloseable {
     /**
      * {@link RedefineRecorder} 的实现：记录一次方法体重定义到 undo-log。
      *
-     * <p>线程检查由 {@link RootDoRedefine} 在提交前完成。此处的
-     * {@code closed} 检查为防御性检查——正常流程下，调用方不应在 scope
-     * 关闭后继续 redefine。</p>
+     * <p>线程检查与 scope 关闭检查均由 {@link RootDoRedefine} 在提交前完成，
+     * 此处不做重复检查。</p>
      *
      * @param target      被 redefine 的类
      * @param oldBytecode redefine 之前的字节码
-     * @param registryId  {@code replace} 分配的 id；专用字节码路径为 {@code null}
-     * @throws OperateFailedException scope 已关闭时
+     * @param registryIds {@code replace} 注册的所有 id；专用字节码路径为空列表
      */
-    private void recordRedefine(Class<?> target, byte[] oldBytecode, Integer registryId) {
-        if (closed) {
-            throw new OperateFailedException(
-                    "Rootie scope is closed; cannot redefine.");
-        }
-        undo.addLast(new RedefineRecord(target, oldBytecode, registryId));
+    private void recordRedefine(Class<?> target, byte[] oldBytecode, List<Integer> registryIds) {
+        undo.addLast(new RedefineRecord(target, oldBytecode, registryIds));
     }
 
     // ===== 生命周期 =====
@@ -473,6 +482,9 @@ public class Rootie implements AutoCloseable {
      *       抛出。redefine 条目仍无条件回滚。</li>
      * </ul>
      *
+     * <p>关闭前会调 {@link ScopeState#close()}，使所有操作器的公开方法
+     * 立即失效。之后进入回滚路径——回滚走内部方法，不受 scope 状态约束。</p>
+     *
      * <p>本方法幂等：重复调用是 no-op。</p>
      *
      * @throws OperateFailedException 从非持有线程调用，或 redefine 回滚失败时
@@ -489,6 +501,12 @@ public class Rootie implements AutoCloseable {
         }
         if (closed) return;
         closed = true;
+
+        // 关闭 scope 共享状态：之后所有操作器的公开方法抛 OperateFailedException。
+        // replayUndo() 里的内部回滚路径（readRaw / writeRaw / restoreForRollback）
+        // 不走 checkOpen，不受影响。
+        state.close();
+
         replayUndo();
     }
 
@@ -597,8 +615,8 @@ public class Rootie implements AutoCloseable {
         Class<?> target = rr.target();
         try {
             redefineOps.restoreForRollback(target, rr.oldBytecode());
-            if (rr.registryId() != null) {
-                MethodRegistry.unregister(rr.registryId().intValue());
+            for (Integer id : rr.registryIds()) {
+                MethodRegistry.unregister(id);
             }
             log.redefineRollback(target);
             return 1;

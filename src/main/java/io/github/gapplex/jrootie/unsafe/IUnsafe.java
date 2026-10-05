@@ -134,7 +134,9 @@ public interface IUnsafe {
     /**
      * 返回底层实现的版本描述，用于诊断与审计。
      *
-     * @return 例如 {@code "jdk.internal.misc.Unsafe (JDK 17+)"}
+     * @return 底层实现的版本描述，格式为
+     *         {@code "<实现类名> (<适用范围>)"}，
+     *         用于诊断与审计。
      */
     String version();
 }

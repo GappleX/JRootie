@@ -15,8 +15,11 @@
  */
 package io.github.gapplex.jrootie.internal.undo;
 
+import io.github.gapplex.jrootie.operators.RootDoRedefine.Session;
 import io.github.gapplex.jrootie.operators.RootDoRedefine;
 import io.github.gapplex.jrootie.operators.Rootie;
+
+import java.util.List;
 
 /**
  * redefine 成功后的回调，用于将操作记入 undo-log。
@@ -24,8 +27,11 @@ import io.github.gapplex.jrootie.operators.Rootie;
  * <p>{@link Rootie} 在 TEST 模式下注入实现；NORMAL 模式下为 {@code null}，
  * {@link RootDoRedefine} 走零开销路径。</p>
  *
- * <p><b>回调时机</b>：字节码已提交到 JVM、缓存已更新之后。回调抛异常
- * 不会撤销已生效的 redefine——调用方应保证回调自身不抛。</p>
+ * <p><b>回调时机</b>：字节码已提交到 JVM、缓存已更新之后。</p>
+ *
+ * <p><b>多 id 语义</b>：链式 session（{@link Session}）累积多个
+ * {@code replace} 调用时，所有替换函数 id 在一次回调中传入。回滚时按 id
+ * 列表批量注销。</p>
  *
  * @since 0.2.0
  */
@@ -33,9 +39,10 @@ import io.github.gapplex.jrootie.operators.Rootie;
 public interface RedefineRecorder {
 
     /**
-     * @param target      被 redefine 的类
-     * @param oldBytecode redefine 之前的字节码
-     * @param registryId  {@code replace} 分配的 id；专用字节码为 {@code null}
+     * @param target       被 redefine 的类
+     * @param oldBytecode  redefine 之前的字节码
+     * @param registryIds  {@code replace} 注册的所有 id；非 {@code null}，
+     *                     可能为空（专用字节码路径如 makeReturn / makeThrow / makeNoOp）
      */
-    void afterRedefine(Class<?> target, byte[] oldBytecode, Integer registryId);
+    void afterRedefine(Class<?> target, byte[] oldBytecode, List<Integer> registryIds);
 }

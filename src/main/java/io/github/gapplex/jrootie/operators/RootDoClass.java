@@ -18,25 +18,24 @@ package io.github.gapplex.jrootie.operators;
 import io.github.gapplex.jrootie.Audit;
 import io.github.gapplex.jrootie.Log;
 import io.github.gapplex.jrootie.exceptions.OperateFailedException;
-import io.github.gapplex.jrootie.unsafe.IUnsafe;
 
 import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
 
 /**
  * 类级别的反射操作封装。
  *
- * <p>本类基于 {@code MethodHandles.Lookup#IMPL_LOOKUP} 与
- * {@code Class#getDeclaredClasses0} 的 {@link MethodHandle}，绕过常规反射的
- * 访问检查，访问任意类的内部成员。</p>
+ * <p>基于 {@code Class#getDeclaredClasses0} 的 {@link MethodHandle}，
+ * 绕过常规反射的访问检查，访问任意类声明的内部类（含 {@code private}
+ * 成员类）。</p>
  *
- * <p>本类实例由 {@link Rootie#rtdoClass()} 统一创建与持有，不应由外部直接构造。</p>
+ * <p>本类实例由 {@link Rootie#rtdoClass()} 统一创建与持有，不应由外部
+ * 直接构造。{@link Rootie#close()} 后所有公开方法抛
+ * {@link OperateFailedException}。</p>
  *
- * <p><b>安全审计：</b>所有公开操作的成功与失败都会经由 {@link Audit} 记录，
+ * <p><b>安全审计：</b>操作的成功与失败都会经由 {@link Audit} 记录，
  * 记录内容仅包含结构信息（类名、调用点），不包含对象内容。</p>
  *
  * @see Rootie
- * @see IUnsafe
  * @since 0.1.0
  */
 public class RootDoClass {
@@ -44,11 +43,8 @@ public class RootDoClass {
     /** 审计日志器。 */
     private static final Audit log = Log.audit(RootDoClass.class);
 
-    /** 底层 Unsafe 抽象，用于实例分配。 */
-    private final IUnsafe UNSAFE;
-
-    /** IMPL_LOOKUP，用于绕过访问检查的 MethodHandle 解析。 */
-    private final MethodHandles.Lookup IMPL_LOOKUP;
+    /** scope 共享状态，{@link Rootie#close()} 后置为已关闭。 */
+    private final ScopeState state;
 
     /** {@code Class#getDeclaredClasses0()} 的句柄。 */
     private final MethodHandle GET_DECLARED_CLASSES_0;
@@ -73,43 +69,12 @@ public class RootDoClass {
     /**
      * 包级构造器，仅供 {@link Rootie} 调用。
      *
-     * @param unsafe   Unsafe 抽象
-     * @param lookup   IMPL_LOOKUP
-     * @param classes  {@code getDeclaredClasses0} 的 MethodHandle
+     * @param classes {@code getDeclaredClasses0} 的 MethodHandle
+     * @param state   scope 共享状态
      */
-    RootDoClass(IUnsafe unsafe, MethodHandles.Lookup lookup, MethodHandle classes) {
-        UNSAFE = unsafe;
-        IMPL_LOOKUP = lookup;
+    RootDoClass(MethodHandle classes, ScopeState state) {
         GET_DECLARED_CLASSES_0 = classes;
-    }
-
-    /**
-     * 在<b>不调用构造器</b>的前提下分配一个实例。
-     *
-     * <p>等价于 {@code Unsafe#allocateInstance(Class)}，返回的对象其字段
-     * 保持 JVM 默认值（{@code 0}/{@code null}），跳过任何构造器逻辑
-     * （包括 {@code final} 字段赋值、父类构造、静态初始化块）。</p>
-     *
-     * @param type 目标类型，不可为 {@code null}
-     * @param <T>  目标类型泛型
-     * @return 已分配但未初始化的实例
-     * @throws OperateFailedException 当 {@code type} 为 {@code null}，
-     *                                或底层分配失败时抛出
-     */
-    @SuppressWarnings("unchecked")
-    public <T> T allocate(Class<T> type) {
-        if (type == null) throw new OperateFailedException("type must not be null");
-        try {
-            T instance = (T) UNSAFE.allocateInstance(type);
-            log.constructorNew(type);
-            return instance;
-        } catch (OperateFailedException e) {
-            throw e;
-        } catch (Throwable t) {
-            log.failed("allocate", type, "<new>", t);
-            throw new OperateFailedException(
-                    "Allocate instance of '" + type.getName() + "' failed.", t);
-        }
+        this.state = state;
     }
 
     /**
@@ -119,10 +84,11 @@ public class RootDoClass {
      *
      * @param owner 目标类，不可为 {@code null}
      * @return 该类的声明类数组；无声明类时返回空数组
-     * @throws OperateFailedException 当 {@code owner} 为 {@code null}，
+     * @throws OperateFailedException scope 已关闭、{@code owner} 为 {@code null}，
      *                                或底层调用失败时抛出
      */
     public Class<?>[] getDeclaredClasses(Class<?> owner) {
+        state.checkOpen();
         if (owner == null) throw new OperateFailedException("owner must not be null");
         try {
             return DECLARED_CLASSES.get(owner).clone();

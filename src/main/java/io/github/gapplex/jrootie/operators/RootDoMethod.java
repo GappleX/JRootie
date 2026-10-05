@@ -41,7 +41,8 @@ import java.util.Objects;
  * <p>方法查找沿继承链进行，同名方法按声明顺序登记，参数类型精确匹配
  * （先基本类型包装，再 {@code ==} 比较）。</p>
  *
- * <p>本类实例由 {@link Rootie#rtdoMethod()} 创建并持有。</p>
+ * <p>本类实例由 {@link Rootie#rtdoMethod()} 创建并持有。
+ * {@link Rootie#close()} 后所有公开方法抛 {@link OperateFailedException}。</p>
  *
  * @see Rootie
  * @since 0.1.0
@@ -66,6 +67,9 @@ public class RootDoMethod {
     /** {@code Class#getDeclaredMethods0(boolean)} 的句柄。 */
     private final MethodHandle GET_DECLARED_METHODS_0;
 
+    /** scope 共享状态，{@link Rootie#close()} 后置为已关闭。 */
+    private final ScopeState state;
+
     /**
      * 方法缓存的 {@link ClassValue}。以类为键，值为“方法名 → 方法列表”的映射，
      * 沿继承链自上而下收集，父类与子类同名方法都保留在同名列表中。
@@ -89,26 +93,30 @@ public class RootDoMethod {
      * @param unsafe  Unsafe 抽象
      * @param lookup  IMPL_LOOKUP
      * @param methods {@code getDeclaredMethods0} 的 MethodHandle
+     * @param state   scope 共享状态
      */
-    RootDoMethod(IUnsafe unsafe, MethodHandles.Lookup lookup, MethodHandle methods) {
+    RootDoMethod(IUnsafe unsafe, MethodHandles.Lookup lookup,
+                 MethodHandle methods, ScopeState state) {
         UNSAFE = unsafe;
         IMPL_LOOKUP = lookup;
         GET_DECLARED_METHODS_0 = methods;
+        this.state = state;
     }
 
     /**
      * 调用实例方法。
      *
-     * @param instance  目标实例，不可为 {@code null}
+     * @param instance   目标实例，不可为 {@code null}
      * @param methodName 方法名，不可为 {@code null}
      * @param paramTypes 形参类型数组，{@code null} 表示无参
      * @param args       实参，{@code null} 视为空数组
      * @return 方法返回值（{@code void} 返回 {@code null}）
-     * @throws OperateFailedException 参数非法、方法未找到、方法抛出异常
-     *                                或底层调用失败时抛出
+     * @throws OperateFailedException scope 已关闭、参数非法、方法未找到、
+     *                                方法抛出异常或底层调用失败时抛出
      */
     public Object invoke(Object instance, String methodName,
                          Class<?>[] paramTypes, Object... args) {
+        state.checkOpen();
         if (instance == null) throw new OperateFailedException("instance must not be null");
         if (methodName == null) throw new OperateFailedException("methodName must not be null");
 
@@ -136,11 +144,12 @@ public class RootDoMethod {
      * @param paramTypes 形参类型数组，{@code null} 表示无参
      * @param args       实参，{@code null} 视为空数组
      * @return 方法返回值（{@code void} 返回 {@code null}）
-     * @throws OperateFailedException 参数非法、方法未找到、方法抛出异常
-     *                                或底层调用失败时抛出
+     * @throws OperateFailedException scope 已关闭、参数非法、方法未找到、
+     *                                方法抛出异常或底层调用失败时抛出
      */
     public Object invokeStatic(Class<?> owner, String methodName,
                                Class<?>[] paramTypes, Object... args) {
+        state.checkOpen();
         if (owner == null) throw new OperateFailedException("owner must not be null");
         if (methodName == null) throw new OperateFailedException("methodName must not be null");
 
